@@ -4,8 +4,6 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 build=${BUILD:-$root/build-windows}
 out=${OUT:-$root/dist}
-version=${VERSION:-$(git -C "$root" describe --tags --always 2>/dev/null || echo dev)}
-name="NXGameViewer-$version-windows-x64"
 
 if [ "${MSYSTEM:-}" != UCRT64 ]; then
     echo "Run this from the \"MSYS2 UCRT64\" shell (or use build-windows.cmd)." >&2
@@ -16,6 +14,9 @@ if [ "${1:-}" = --install-deps ]; then
     pacman -S --needed --noconfirm git zip \
         mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,qt6-base,qt6-multimedia,qt6-tools,opus,zstd,openssl,zlib}
 fi
+
+version=${VERSION:-$(git -c safe.directory='*' -C "$root" describe --tags --always 2>/dev/null || echo dev)}
+name="NXGameViewer-$version-windows-x64"
 
 cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build "$build"
