@@ -8,6 +8,7 @@
 #include <map>
 #include <new>
 #include <numeric>
+#include <tuple>
 
 namespace {
 
@@ -294,23 +295,30 @@ std::optional<QByteArray> replaceSarcEntry(const QByteArray &sarc, const QString
             target = qsizetype(i);
     if (target < 0)
         return fail(QObject::tr("%1 is not in this archive.").arg(name));
-    const std::pair<qsizetype, qsizetype> replaced{p->nodes[size_t(target)].start, p->nodes[size_t(target)].end};
 
-    std::map<std::pair<qsizetype, qsizetype>, std::pair<qsizetype, qsizetype>> moved;
-    for (const SarcNode &node : p->nodes)
-        moved.emplace(std::pair{node.start, node.end}, std::pair<qsizetype, qsizetype>{0, 0});
+    using Block = std::tuple<qsizetype, qsizetype, bool>;
+    auto blockOf = [&](size_t i) { return Block{p->nodes[i].start, p->nodes[i].end, qsizetype(i) == target}; };
+    std::map<Block, std::pair<qsizetype, qsizetype>> moved;
+    for (size_t i = 0; i < p->nodes.size(); ++i)
+        moved.emplace(blockOf(i), std::pair<qsizetype, qsizetype>{0, 0});
     qsizetype previousEnd = p->dataOffset;
-    for (const auto &[range, unused] : moved) {
-        if (range.first < previousEnd && range.first != range.second)
+    std::pair<qsizetype, qsizetype> previous{-1, -1};
+    for (const auto &[block, unused] : moved) {
+        const auto &[start, end, isTarget] = block;
+        if (std::pair{start, end} == previous)
+            continue;
+        if (start < previousEnd && start != end)
             return fail(QObject::tr("Files in this archive overlap, so it cannot be rebuilt."));
-        previousEnd = std::max(previousEnd, range.second);
+        previousEnd = std::max(previousEnd, end);
+        previous = {start, end};
     }
     const qsizetype tailStart = previousEnd;
 
     qsizetype cursor = p->dataOffset;
-    for (auto &[range, place] : moved) {
-        const qsizetype length = range == replaced ? data.size() : range.second - range.first;
-        const qsizetype start = alignUp(cursor, inferredAlignment(range.first));
+    for (auto &[block, place] : moved) {
+        const auto &[from, to, isTarget] = block;
+        const qsizetype length = isTarget ? data.size() : to - from;
+        const qsizetype start = alignUp(cursor, inferredAlignment(from));
         place = {start, start + length};
         cursor = start + length;
     }
@@ -323,15 +331,15 @@ std::optional<QByteArray> replaceSarcEntry(const QByteArray &sarc, const QString
         std::memcpy(out.data(), sarc.constData(), size_t(p->dataOffset));
         const Endian e(p->layout.littleEndian);
         e.put32(out.data() + 8, quint32(total));
-        for (const auto &[range, place] : moved) {
-            const char *source = range == replaced ? data.constData() : sarc.constData() + range.first;
+        for (const auto &[block, place] : moved) {
+            const char *source = std::get<2>(block) ? data.constData() : sarc.constData() + std::get<0>(block);
             if (place.second > place.first)
                 std::memcpy(out.data() + place.first, source, size_t(place.second - place.first));
         }
         if (sarc.size() > tailStart)
             std::memcpy(out.data() + cursor, sarc.constData() + tailStart, size_t(sarc.size() - tailStart));
         for (size_t i = 0; i < p->nodes.size(); ++i) {
-            const auto &place = moved.at({p->nodes[i].start, p->nodes[i].end});
+            const auto &place = moved.at(blockOf(i));
             char *n = out.data() + p->nodesOffset + qsizetype(i) * kNodeSize;
             e.put32(n + 8, quint32(place.first - p->dataOffset));
             e.put32(n + 12, quint32(place.second - p->dataOffset));

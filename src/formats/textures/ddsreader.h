@@ -6,7 +6,6 @@ class DdsReader : public FormatReader
 {
 public:
     static constexpr qint64 kMaxFileSize = qint64{512} * 1024 * 1024;
-    static constexpr int kMaxSide = 16384;
 
     QString name() const override { return QStringLiteral("DDS texture"); }
     int score(const QString &fileName, QByteArrayView head) const override;

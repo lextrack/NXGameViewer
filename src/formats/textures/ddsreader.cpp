@@ -2,11 +2,10 @@
 
 #include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "textures/texturedecode.h"
 
-#include <QFile>
 #include <QObject>
-#include <QtEndian>
 
 #include <optional>
 
@@ -66,7 +65,7 @@ std::unique_ptr<Document> parse(const QByteArray &data, QString *error)
     const quint32 pfFlags = le32(data, 80);
     const QByteArrayView fourCC = QByteArrayView(data).sliced(84, 4);
     const bool cubemap = le32(data, 112) & kCubemap;
-    if (width <= 0 || height <= 0 || width > DdsReader::kMaxSide || height > DdsReader::kMaxSide)
+    if (width <= 0 || height <= 0 || width > kMaxTextureSide || height > kMaxTextureSide)
         return fail(QObject::tr("The DDS texture has an unexpected size."));
 
     qsizetype start = 128;
@@ -154,18 +153,10 @@ int DdsReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> DdsReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
-        return nullptr;
-    }
-    return parse(file.readAll(), error);
+    return parse(*bytes, error);
 }
 
 std::unique_ptr<Document> DdsReader::readBytes(const QByteArray &data, const QString &, QString *error) const

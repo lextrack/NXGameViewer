@@ -1,10 +1,10 @@
 #include "textures/xtxreader.h"
+#include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "textures/texturedecode.h"
 
-#include <QFile>
 #include <QObject>
-#include <QtEndian>
 
 #include <algorithm>
 #include <optional>
@@ -30,22 +30,15 @@ QString targetName(quint32 target)
     }
 }
 
-struct TextureInfo
-{
-    quint64 dataSize = 0;
-    quint32 width = 0, height = 0, depth = 0, target = 0, format = 0, mipCount = 0, sliceSize = 0;
-    quint32 blockHeightLog2 = 0, arrayLength = 0;
-};
-
-void addTextureTables(const TextureInfo &info, const QByteArray &data, qsizetype start, qsizetype size,
+void addTextureTables(const XtxTextureInfo &info, const QByteArray &data, qsizetype start, qsizetype size,
                       int textureIndex, int textureCount, Document &doc)
 {
     const std::optional<PixelFormat> format = xtxPixelFormat(info.format);
     QString problem;
     if (!format)
         problem = QObject::tr("Pixel format 0x%1 cannot be shown yet").arg(info.format, 0, 16);
-    else if (info.width == 0 || info.height == 0 || info.width > quint32(XtxReader::kMaxSide)
-             || info.height > quint32(XtxReader::kMaxSide))
+    else if (info.width == 0 || info.height == 0 || info.width > quint32(kMaxTextureSide)
+             || info.height > quint32(kMaxTextureSide))
         problem = QObject::tr("Unexpected size %1 × %2").arg(info.width).arg(info.height);
 
     int columns = 0, rows = 0, bpe = 0, blockHeight = 1;
@@ -115,8 +108,6 @@ void addTextureTables(const TextureInfo &info, const QByteArray &data, qsizetype
     }
 }
 
-quint32 u32(const QByteArray &d, qsizetype pos) { return qFromLittleEndian<quint32>(d.constData() + pos); }
-quint64 u64(const QByteArray &d, qsizetype pos) { return qFromLittleEndian<quint64>(d.constData() + pos); }
 
 }
 
@@ -150,18 +141,10 @@ int XtxReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> XtxReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
-        return nullptr;
-    }
-    return fromBytes(file.readAll(), error);
+    return fromBytes(*bytes, error);
 }
 
 std::unique_ptr<Document> XtxReader::fromBytes(const QByteArray &data, QString *error)
@@ -171,48 +154,10 @@ std::unique_ptr<Document> XtxReader::fromBytes(const QByteArray &data, QString *
             *error = message;
         return nullptr;
     };
-    if (data.size() < 0x10 || !data.startsWith("DFvN"))
-        return fail(QObject::tr("Not an XTX texture (no \"DFvN\" at the start)."));
-
-    struct Texture
-    {
-        TextureInfo info;
-        qsizetype start, size;
-    };
-    std::vector<Texture> textures;
-    std::optional<TextureInfo> pendingInfo;
-    qsizetype pos = u32(data, 4);
-    for (int guard = 0; pos >= 0x10 && pos + kBlockHeaderSize <= data.size() && guard < 100000; ++guard) {
-        if (data.mid(pos, 4) != "HBvN")
-            return fail(QObject::tr("Broken block at 0x%1.").arg(pos, 0, 16));
-        const quint64 size = u64(data, pos + 8), offset = u64(data, pos + 16);
-        const quint32 type = u32(data, pos + 24);
-        if (offset < quint64(kBlockHeaderSize) || offset > quint64(data.size() - pos)
-            || size > quint64(data.size() - pos) - offset)
-            return fail(QObject::tr("Block at 0x%1 goes past the end of the file.").arg(pos, 0, 16));
-        const qsizetype start = pos + qsizetype(offset);
-
-        if (type == kBlockTextureInfo) {
-            if (size < quint64(kTextureInfoSize))
-                return fail(QObject::tr("Texture info at 0x%1 is too short.").arg(start, 0, 16));
-            TextureInfo info;
-            info.dataSize = u64(data, start);
-            info.width = u32(data, start + 0x0C);
-            info.height = u32(data, start + 0x10);
-            info.depth = u32(data, start + 0x14);
-            info.target = u32(data, start + 0x18);
-            info.format = u32(data, start + 0x1C);
-            info.mipCount = u32(data, start + 0x20);
-            info.sliceSize = u32(data, start + 0x24);
-            info.blockHeightLog2 = u32(data, start + 0x6C);
-            info.arrayLength = u32(data, start + 0x74);
-            pendingInfo = info;
-        } else if (type == kBlockData && pendingInfo) {
-            textures.push_back({*pendingInfo, start, qsizetype(size)});
-            pendingInfo.reset();
-        }
-        pos = start + qsizetype(size);
-    }
+    const std::optional<XtxLayout> layout = parseXtxLayout(data, error);
+    if (!layout)
+        return nullptr;
+    const std::vector<XtxTexture> &textures = layout->textures;
     if (textures.empty())
         return fail(QObject::tr("The file has no texture."));
 
@@ -221,4 +166,53 @@ std::unique_ptr<Document> XtxReader::fromBytes(const QByteArray &data, QString *
         addTextureTables(textures[i].info, data, textures[i].start, textures[i].size, int(i), int(textures.size()),
                          *doc);
     return doc;
+}
+
+std::optional<XtxLayout> parseXtxLayout(const QByteArray &data, QString *error)
+{
+    auto fail = [error](const QString &message) -> std::optional<XtxLayout> {
+        if (error)
+            *error = message;
+        return std::nullopt;
+    };
+    if (data.size() < 0x10 || !data.startsWith("DFvN"))
+        return fail(QObject::tr("Not an XTX texture (no \"DFvN\" at the start)."));
+
+    XtxLayout layout;
+    std::optional<XtxTextureInfo> pendingInfo;
+    qsizetype pos = le32(data, 4);
+    for (int guard = 0; pos >= 0x10 && pos + kBlockHeaderSize <= data.size() && guard < 100000; ++guard) {
+        if (data.mid(pos, 4) != "HBvN")
+            return fail(QObject::tr("Broken block at 0x%1.").arg(pos, 0, 16));
+        const quint64 size = le64(data, pos + 8), offset = le64(data, pos + 16);
+        const quint32 type = le32(data, pos + 24);
+        if (offset < quint64(kBlockHeaderSize) || offset > quint64(data.size() - pos)
+            || size > quint64(data.size() - pos) - offset)
+            return fail(QObject::tr("Block at 0x%1 goes past the end of the file.").arg(pos, 0, 16));
+        const qsizetype start = pos + qsizetype(offset);
+
+        if (type == kBlockTextureInfo) {
+            if (size < quint64(kTextureInfoSize))
+                return fail(QObject::tr("Texture info at 0x%1 is too short.").arg(start, 0, 16));
+            XtxTextureInfo info;
+            info.at = start;
+            info.dataSize = le64(data, start);
+            info.width = le32(data, start + 0x0C);
+            info.height = le32(data, start + 0x10);
+            info.depth = le32(data, start + 0x14);
+            info.target = le32(data, start + 0x18);
+            info.format = le32(data, start + 0x1C);
+            info.mipCount = le32(data, start + 0x20);
+            info.sliceSize = le32(data, start + 0x24);
+            info.blockHeightLog2 = le32(data, start + 0x6C);
+            info.arrayLength = le32(data, start + 0x74);
+            pendingInfo = info;
+            ++layout.infoBlocks;
+        } else if (type == kBlockData && pendingInfo) {
+            layout.textures.push_back({*pendingInfo, start, qsizetype(size)});
+            pendingInfo.reset();
+        }
+        pos = start + qsizetype(size);
+    }
+    return layout;
 }

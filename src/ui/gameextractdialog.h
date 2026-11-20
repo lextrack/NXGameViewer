@@ -8,6 +8,7 @@
 #include <QFutureWatcher>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -22,6 +23,13 @@ struct ScannedPackage
 {
     QString path;
     std::vector<SwitchTitle> titles;
+    QString error;
+};
+
+struct ExtractOutcome
+{
+    bool ok = false;
+    SwitchExtractResult result;
     QString error;
 };
 
@@ -61,6 +69,11 @@ private:
     void updateButtons();
     void extractSelected();
     void runExtraction(const SwitchTitle &title, const QString &destination);
+    void verifySelected();
+    using Progress = std::function<bool(qint64 done, qint64 total)>;
+    using TitleJob = std::function<ExtractOutcome(const Progress &progress)>;
+    void startTitleJob(const QString &label, const QString &title, const TitleJob &job,
+                       const std::function<void(const ExtractOutcome &, bool canceled)> &finished);
     KeySearchPlaces placesFor(const QStringList &packages) const;
     QStringList listedPackages() const;
     void applyKeys(const SwitchKeySearch &search, bool chosen);
@@ -75,6 +88,7 @@ private:
     QTimer *m_statusTimer = nullptr;
     QTreeWidget *m_list = nullptr;
     QPushButton *m_extract = nullptr;
+    QPushButton *m_verify = nullptr;
     std::optional<SwitchKeys> m_keys;
     QString m_keyPath;
     QString m_keyProblem;

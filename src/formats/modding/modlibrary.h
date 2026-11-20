@@ -54,6 +54,7 @@ std::vector<ModRecord> findInstalledMods(const QStringList &dataFolders);
 QString modRoot(const QString &romfs);
 std::vector<ModFile> listModFiles(const QString &romfs);
 bool removeModFile(const QString &romfs, const QString &relative, bool toTrash, QString *error);
+QString modDeleteTarget(const QString &romfs);
 bool deleteMod(const QString &romfs, bool toTrash, QString *error);
 
 QString zipPathFor(const ModRecord &record, const QString &relative);

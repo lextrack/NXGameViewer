@@ -298,11 +298,17 @@ bool removeModFile(const QString &romfs, const QString &relative, bool toTrash, 
     return true;
 }
 
-bool deleteMod(const QString &romfs, bool toTrash, QString *error)
+QString modDeleteTarget(const QString &romfs)
 {
     const QString folder = clean(romfs);
     const std::optional<ModLocation> mod = parseModFolder(folder);
-    const QString target = mod && layoutHasModName(mod->layout) ? modRoot(folder) : folder;
+    return mod && layoutHasModName(mod->layout) ? modRoot(folder) : folder;
+}
+
+bool deleteMod(const QString &romfs, bool toTrash, QString *error)
+{
+    const QString folder = clean(romfs);
+    const QString target = modDeleteTarget(folder);
     if (QFileInfo(folder).fileName().compare(QLatin1String("romfs"), Qt::CaseInsensitive) != 0
         || !QFileInfo(target).isDir()) {
         if (error)

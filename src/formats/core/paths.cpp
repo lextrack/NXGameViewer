@@ -2,6 +2,8 @@
 
 #include <QStringList>
 
+#include <algorithm>
+
 namespace {
 
 bool isDriveLetter(const QString &part)
@@ -18,7 +20,10 @@ QString safeFileName(QString name)
         if (forbidden.contains(c) || c.unicode() < 0x20)
             c = u'_';
     }
-    return name.trimmed();
+    name = name.trimmed();
+    if (!name.isEmpty() && std::all_of(name.cbegin(), name.cend(), [](QChar c) { return c == u'.'; }))
+        name.fill(u'_');
+    return name;
 }
 
 bool isSafeRelativePath(const QString &path)
@@ -39,8 +44,7 @@ QString sanitizedRelativePath(const QString &path)
     for (const QString &part : unified.split(u'/', Qt::SkipEmptyParts)) {
         if (part == QLatin1String(".") || part == QLatin1String(".."))
             continue;
-        const QString safe = safeFileName(part);
-        if (!safe.isEmpty() && safe != QLatin1String(".") && safe != QLatin1String(".."))
+        if (const QString safe = safeFileName(part); !safe.isEmpty())
             parts << safe;
     }
     return parts.join(u'/');

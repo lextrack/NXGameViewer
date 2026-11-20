@@ -1,6 +1,8 @@
 #include "data/ainbreader.h"
 
+#include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -8,12 +10,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QObject>
-#include <QtEndian>
 
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -28,68 +28,11 @@ constexpr int kMaxItems = 1 << 20;
 
 enum ValueType { Int, Bool, Float, String, Vec3f, UserDefined };
 
-struct Failure : std::runtime_error
-{
-    using std::runtime_error::runtime_error;
-};
-
-class Reader
+class Reader : public ByteReader
 {
 public:
-    explicit Reader(const QByteArray &data) : m_data(data) {}
-
-    void need(qint64 at, qint64 size) const
-    {
-        if (at < 0 || size < 0 || at > m_data.size() - size)
-            throw Failure(QObject::tr("An offset points outside the file.").toStdString());
-    }
-    quint8 u8(qint64 at) const
-    {
-        need(at, 1);
-        return quint8(m_data[at]);
-    }
-    quint16 u16(qint64 at) const
-    {
-        need(at, 2);
-        return qFromLittleEndian<quint16>(m_data.constData() + at);
-    }
-    qint16 s16(qint64 at) const { return qint16(u16(at)); }
-    quint32 u32(qint64 at) const
-    {
-        need(at, 4);
-        return qFromLittleEndian<quint32>(m_data.constData() + at);
-    }
-    float f32(qint64 at) const { return std::bit_cast<float>(u32(at)); }
-    int count(quint32 n) const
-    {
-        if (n > quint32(kMaxItems))
-            throw Failure(QObject::tr("The file lists an impossible number of items.").toStdString());
-        return int(n);
-    }
-
-    void setPool(qint64 at) { m_pool = at; }
-    QString str(quint32 offset) const
-    {
-        const qint64 at = m_pool + offset;
-        need(at, 1);
-        const char *p = m_data.constData() + at;
-        return QString::fromUtf8(p, qsizetype(qstrnlen(p, uint(m_data.size() - at))));
-    }
-    QString guid(qint64 at) const
-    {
-        need(at, 16);
-        const QByteArray b = m_data.mid(at, 16);
-        return QStringLiteral("%1-%2-%3-%4-%5")
-            .arg(u32(at), 8, 16, QLatin1Char('0'))
-            .arg(u16(at + 4), 4, 16, QLatin1Char('0'))
-            .arg(u16(at + 6), 4, 16, QLatin1Char('0'))
-            .arg(u16(at + 8), 4, 16, QLatin1Char('0'))
-            .arg(QString::fromLatin1(b.mid(10).toHex()));
-    }
-
-private:
-    const QByteArray &m_data;
-    qint64 m_pool = 0;
+    using ByteReader::ByteReader;
+    int count(quint32 n) const { return ByteReader::count(n, kMaxItems); }
 };
 
 QString typeName(int type)
@@ -227,7 +170,7 @@ std::array<std::vector<Param>, kValueTypes> readImmediates(const Reader &r, qint
             r.count(quint32(out[size_t(t)].size()));
         }
         if (at != stops[size_t(t)])
-            throw Failure("immediate parameters do not line up");
+            throw ParseFailure("immediate parameters do not line up");
     }
     return out;
 }
@@ -279,7 +222,7 @@ IoParams readIo(const Reader &r, qint64 start, qint64 end, const std::vector<std
             r.count(quint32(out.inputs[size_t(t)].size()));
         }
         if (at != stops[size_t(t * 2)])
-            throw Failure("input parameters do not line up");
+            throw ParseFailure("input parameters do not line up");
         while (at < stops[size_t(t * 2 + 1)]) {
             Param p;
             p.name = r.str(r.u32(at) & 0x7FFFFFFF);
@@ -292,7 +235,7 @@ IoParams readIo(const Reader &r, qint64 start, qint64 end, const std::vector<std
             r.count(quint32(out.outputs[size_t(t)].size()));
         }
         if (at != stops[size_t(t * 2 + 1)])
-            throw Failure("output parameters do not line up");
+            throw ParseFailure("output parameters do not line up");
     }
     return out;
 }
@@ -366,7 +309,7 @@ Ainb parseAinb(const QByteArray &data)
 {
     Reader r(data);
     if (data.size() < kHeaderSize || !data.startsWith("AIB "))
-        throw Failure(QObject::tr("Not an AINB file (no \"AIB \" at the start).").toStdString());
+        throw ParseFailure(QObject::tr("Not an AINB file (no \"AIB \" at the start).").toStdString());
     Ainb a;
     a.version = r.u32(4);
     r.setPool(r.u32(0x24));
@@ -390,7 +333,7 @@ Ainb parseAinb(const QByteArray &data)
     try {
         immediates = readImmediates(r, r.u32(0x2C), r.u32(0x34));
         io = readIo(r, r.u32(0x34), r.u32(0x38), multi);
-    } catch (const Failure &) {
+    } catch (const ParseFailure &) {
         a.paramsRead = false;
         immediates = {};
         io = {};
@@ -507,18 +450,10 @@ int AinbReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> AinbReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> AinbReader::readBytes(const QByteArray &data, const QString &fileName, QString *error) const
@@ -526,7 +461,7 @@ std::unique_ptr<Document> AinbReader::readBytes(const QByteArray &data, const QS
     Ainb a;
     try {
         a = parseAinb(data);
-    } catch (const Failure &f) {
+    } catch (const ParseFailure &f) {
         if (error)
             *error = QString::fromStdString(f.what());
         return nullptr;

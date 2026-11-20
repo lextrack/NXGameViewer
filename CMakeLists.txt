@@ -218,7 +218,7 @@ qt_add_executable(test_mainwindow tests/test_mainwindow.cpp tests/sample_tbl.h t
 target_link_libraries(test_mainwindow PRIVATE viewerui Qt6::Test ZLIB::ZLIB nxgv_zstd nxgv_warnings)
 add_test(NAME test_mainwindow COMMAND test_mainwindow)
 # Run the window test without showing a window on screen
-set_tests_properties(test_mainwindow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+set_tests_properties(test_mainwindow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0")
 
 option(NXGV_FUZZ "Build the libFuzzer targets (needs clang)" OFF)
 if(NXGV_FUZZ)

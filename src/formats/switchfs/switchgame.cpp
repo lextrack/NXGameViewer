@@ -1,5 +1,6 @@
 #include "switchfs/switchgame.h"
 
+#include "core/bytes.h"
 #include "core/paths.h"
 #include "switchfs/switchkeys.h"
 #include "switchfs/switchnca.h"
@@ -40,22 +41,12 @@ struct Package
     SwitchKeys keys;
 };
 
-quint32 u32(const QByteArray &b, qsizetype at)
-{
-    return qFromLittleEndian<quint32>(b.constData() + at);
-}
-
-quint64 u64(const QByteArray &b, qsizetype at)
-{
-    return qFromLittleEndian<quint64>(b.constData() + at);
-}
-
 void readTicket(const QByteArray &ticket, SwitchKeys &keys)
 {
     if (ticket.size() < 4)
         return;
     qsizetype signature = 0;
-    switch (u32(ticket, 0)) {
+    switch (le32(ticket, 0)) {
     case 0x10000: case 0x10003: signature = 0x200 + 0x3C; break;
     case 0x10001: case 0x10004: signature = 0x100 + 0x3C; break;
     case 0x10002: case 0x10005: signature = 0x3C + 0x40; break;
@@ -91,7 +82,7 @@ std::optional<Package> openPackage(const QString &path, const SwitchKeys &keys, 
             base = 0x1000;
         if (base < 0)
             return fail(QObject::tr("Not an NSP or XCI file."));
-        const qint64 rootAt = base + qint64(u64(start, base + 0x130));
+        const qint64 rootAt = base + qint64(le64(start, base + 0x130));
         StoragePtr root = subStorage(p.file, rootAt, p.file->size() - rootAt);
         const std::optional<std::vector<PartitionEntry>> partitions = readPartition(root, error);
         if (!partitions)
@@ -193,7 +184,7 @@ QString checkReadable(const Package &p, const QString &ncaName, bool needRomfs)
         if (!romfs)
             return error;
         const QByteArray header = romfs->read(0, 8);
-        if (header.size() != 8 || u64(header, 0) != 0x50)
+        if (header.size() != 8 || le64(header, 0) != 0x50)
             return QObject::tr("The game's files cannot be decrypted. Are the keys (prod.keys) from your own console "
                                "and up to date?");
         found = true;
@@ -224,8 +215,8 @@ std::vector<SwitchTitle> titlesFromMeta(const Package &p, const QString &path)
                 continue;
             SwitchTitle t;
             t.package = path;
-            t.titleId = u64(cnmt, 0);
-            t.version = u32(cnmt, 8);
+            t.titleId = le64(cnmt, 0);
+            t.version = le32(cnmt, 8);
             switch (uchar(cnmt[0x0C])) {
             case 0x80: t.type = SwitchTitle::Application; break;
             case 0x81: t.type = SwitchTitle::Patch; break;

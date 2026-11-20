@@ -1,6 +1,7 @@
 #include "rage/awcreader.h"
 
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "sound/bwavreader.h"
 
 #include <QFile>
@@ -344,18 +345,10 @@ int AwcReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> AwcReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 1 GB.");
-        return nullptr;
-    }
-    return parse(file.readAll(), path, error);
+    return parse(*bytes, path, error);
 }
 
 std::unique_ptr<Document> AwcReader::readBytes(const QByteArray &data, const QString &fileName, QString *error) const

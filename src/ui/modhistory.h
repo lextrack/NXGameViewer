@@ -10,6 +10,14 @@
 inline constexpr auto kModHistorySetting = "mods/history";
 inline constexpr auto kLegacyModFolderSetting = "modFolder";
 
+inline void saveModHistory(const std::vector<ModRecord> &history)
+{
+    QVariantList list;
+    for (const ModRecord &r : history)
+        list << modRecordToVariant(r);
+    QSettings().setValue(kModHistorySetting, list);
+}
+
 inline std::vector<ModRecord> loadModHistory()
 {
     QSettings settings;
@@ -23,20 +31,9 @@ inline std::vector<ModRecord> loadModHistory()
         if (r.exists())
             rememberMod(history, std::move(r));
         settings.remove(kLegacyModFolderSetting);
-        QVariantList list;
-        for (const ModRecord &record : history)
-            list << modRecordToVariant(record);
-        settings.setValue(kModHistorySetting, list);
+        saveModHistory(history);
     }
     return history;
-}
-
-inline void saveModHistory(const std::vector<ModRecord> &history)
-{
-    QVariantList list;
-    for (const ModRecord &r : history)
-        list << modRecordToVariant(r);
-    QSettings().setValue(kModHistorySetting, list);
 }
 
 inline void rememberModInHistory(ModRecord record)

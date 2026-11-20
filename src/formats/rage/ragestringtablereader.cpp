@@ -2,6 +2,7 @@
 
 #include "archives/rpf6reader.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "rage/rageresource.h"
 
 #include <QFile>
@@ -23,22 +24,6 @@ constexpr quint32 kMaxSlots = 1 << 20;
 constexpr quint32 kMaxStrings = 1 << 22;
 constexpr int kMaxStringBytes = 1 << 20;
 constexpr int kMaxLanguages = 32;
-
-std::optional<QByteArray> readFile(const QString &path, qint64 limit, QString *error)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
-        return std::nullopt;
-    }
-    if (file.size() > limit) {
-        if (error)
-            *error = QObject::tr("File is larger than %1 MB.").arg(limit / (1024 * 1024));
-        return std::nullopt;
-    }
-    return file.readAll();
-}
 
 QString shown(QString text)
 {
@@ -312,7 +297,7 @@ int RageStringTableReader::score(const QString &fileName, QByteArrayView head) c
 
 std::unique_ptr<Document> RageStringTableReader::read(const QString &path, QString *error) const
 {
-    std::optional<QByteArray> data = readFile(path, kMaxFileSize, error);
+    std::optional<QByteArray> data = readWholeFile(path, kMaxFileSize, error);
     return data ? readBytes(*data, path, error) : nullptr;
 }
 
@@ -354,7 +339,7 @@ int RageLanguageTableReader::score(const QString &fileName, QByteArrayView head)
 
 std::unique_ptr<Document> RageLanguageTableReader::read(const QString &path, QString *error) const
 {
-    std::optional<QByteArray> data = readFile(path, kMaxFileSize, error);
+    std::optional<QByteArray> data = readWholeFile(path, kMaxFileSize, error);
     return data ? readBytes(*data, path, error) : nullptr;
 }
 

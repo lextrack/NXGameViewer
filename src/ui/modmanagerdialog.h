@@ -37,7 +37,8 @@ private:
     void showFiles();
     void updateButtons();
     bool confirm(const QString &question, const QString &details);
-    bool removeWithFallback(const std::function<bool(bool toTrash, QString *error)> &remove);
+    using Removal = std::function<bool(bool toTrash, QString *error)>;
+    bool removeWithFallback(const std::vector<Removal> &removals);
     void chooseZip();
 
     QStringList m_dataFolders;

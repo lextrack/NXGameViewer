@@ -29,6 +29,7 @@
 #include <QtConcurrent>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 
 namespace {
@@ -57,13 +58,6 @@ quint64 baseGameId(const SwitchTitle &t)
     const quint64 id = t.titleId & ~quint64(0xFFF);
     return t.type == SwitchTitle::AddOn ? id - 0x1000 : id;
 }
-
-struct ExtractOutcome
-{
-    bool ok = false;
-    SwitchExtractResult result;
-    QString error;
-};
 
 }
 
@@ -132,6 +126,9 @@ GameExtractDialog::GameExtractDialog(QWidget *parent, std::optional<KeySearchPla
     m_extract = buttons->addButton(tr("Extract…"), QDialogButtonBox::AcceptRole);
     m_extract->setToolTip(tr("Choose where to save the selected game"));
     connect(m_extract, &QPushButton::clicked, this, &GameExtractDialog::extractSelected);
+    m_verify = buttons->addButton(tr("Verify"), QDialogButtonBox::ActionRole);
+    m_verify->setToolTip(tr("Check every block of the selected game against its hashes, to find a damaged dump"));
+    connect(m_verify, &QPushButton::clicked, this, &GameExtractDialog::verifySelected);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
     auto *layout = new QVBoxLayout(this);
@@ -499,7 +496,9 @@ std::optional<SwitchTitle> GameExtractDialog::selectedTitle() const
 void GameExtractDialog::updateButtons()
 {
     const std::optional<SwitchTitle> t = selectedTitle();
-    m_extract->setEnabled(t && t->canExtract() && (m_keys || t->nupPackage >= 0));
+    const bool usable = t && t->canExtract() && (m_keys || t->nupPackage >= 0) && !m_extraction;
+    m_extract->setEnabled(usable);
+    m_verify->setEnabled(usable);
     if (t && !t->canExtract())
         flashStatus(tr("%1 cannot be extracted: %2").arg(displayName(*t), t->problem));
     else if (m_statusTimer->isActive()) {
@@ -536,21 +535,21 @@ void GameExtractDialog::extractSelected()
     runExtraction(*t, path);
 }
 
-void GameExtractDialog::runExtraction(const SwitchTitle &title, const QString &destination)
+void GameExtractDialog::startTitleJob(const QString &label, const QString &title, const TitleJob &job,
+                                      const std::function<void(const ExtractOutcome &, bool canceled)> &finished)
 {
     auto done = std::make_shared<std::atomic<qint64>>(0);
     auto total = std::make_shared<std::atomic<qint64>>(0);
     auto cancel = std::make_shared<std::atomic<bool>>(false);
-    QProgressDialog *progress =
-        makeProgressDialog(this, tr("Extracting %1…").arg(displayName(title)), tr("Extract game"), 1000, 0);
+    QProgressDialog *progress = makeProgressDialog(this, label, title, 1000, 0);
     progress->setValue(0);
     auto *timer = new QTimer(progress);
     timer->setInterval(100);
-    connect(timer, &QTimer::timeout, progress, [progress, done, total] {
+    connect(timer, &QTimer::timeout, progress, [progress, done, total, label] {
         const qint64 t = total->load(), d = done->load();
         if (t > 0) {
             progress->setValue(int(d * 1000 / t));
-            progress->setLabelText(tr("Extracting… %1 of %2").arg(QLocale().formattedDataSize(d), QLocale().formattedDataSize(t)));
+            progress->setLabelText(tr("%1 %2 of %3").arg(label, QLocale().formattedDataSize(d), QLocale().formattedDataSize(t)));
         }
     });
     connect(progress, &QProgressDialog::canceled, progress, [cancel] { cancel->store(true); });
@@ -559,12 +558,35 @@ void GameExtractDialog::runExtraction(const SwitchTitle &title, const QString &d
     auto *watcher = new QFutureWatcher<ExtractOutcome>(this);
     m_extraction = watcher;
     m_extractionCancel = cancel;
-    connect(watcher, &QFutureWatcher<ExtractOutcome>::finished, this, [this, watcher, progress, destination, title] {
+    updateButtons();
+    connect(watcher, &QFutureWatcher<ExtractOutcome>::finished, this, [this, watcher, progress, cancel, finished] {
         const ExtractOutcome outcome = watcher->result();
         m_extraction = nullptr;
         m_extractionCancel.reset();
         watcher->deleteLater();
         closeProgressDialog(progress);
+        updateButtons();
+        finished(outcome, cancel->load());
+    });
+    watcher->setFuture(QtConcurrent::run([job, done, total, cancel] {
+        return job([&](qint64 d, qint64 t) {
+            done->store(d);
+            total->store(t);
+            return !cancel->load();
+        });
+    }));
+}
+
+void GameExtractDialog::runExtraction(const SwitchTitle &title, const QString &destination)
+{
+    const SwitchKeys keys = m_keys.value_or(SwitchKeys());
+    const TitleJob job = [title, keys, destination](const Progress &progress) {
+        ExtractOutcome outcome;
+        outcome.ok = extractSwitchTitle(title, keys, destination, progress, &outcome.result, &outcome.error);
+        return outcome;
+    };
+    startTitleJob(tr("Extracting %1…").arg(displayName(title)), tr("Extract game"), job,
+                  [this, title, destination](const ExtractOutcome &outcome, bool) {
         if (!outcome.ok) {
             QMessageBox::warning(this, tr("Extract game"), outcome.error);
             return;
@@ -590,17 +612,35 @@ void GameExtractDialog::runExtraction(const SwitchTitle &title, const QString &d
             QDesktopServices::openUrl(QUrl::fromLocalFile(destination));
         }
     });
-    watcher->setFuture(QtConcurrent::run([title, keys = m_keys.value_or(SwitchKeys()), destination, done, total, cancel] {
+}
+
+void GameExtractDialog::verifySelected()
+{
+    const std::optional<SwitchTitle> t = selectedTitle();
+    if (!t || !t->canExtract() || (!m_keys && t->nupPackage < 0) || m_extraction)
+        return;
+    const SwitchTitle title = *t;
+    const SwitchKeys keys = m_keys.value_or(SwitchKeys());
+    const TitleJob job = [title, keys](const Progress &progress) {
         ExtractOutcome outcome;
-        outcome.ok = extractSwitchTitle(title, keys, destination,
-                                        [&](qint64 d, qint64 t) {
-                                            done->store(d);
-                                            total->store(t);
-                                            return !cancel->load();
-                                        },
-                                        &outcome.result, &outcome.error);
+        outcome.ok = verifySwitchTitle(title, keys, progress, &outcome.error);
         return outcome;
-    }));
+    };
+    startTitleJob(tr("Verifying %1…").arg(displayName(title)), tr("Verify game"), job,
+                  [this, title](const ExtractOutcome &outcome, bool canceled) {
+        if (canceled) {
+            flashStatus(tr("Verification of %1 canceled.").arg(displayName(title)));
+            return;
+        }
+        if (!outcome.ok) {
+            QMessageBox::warning(this, tr("Verify game"),
+                                 tr("%1 is damaged or could not be checked:\n%2").arg(displayName(title), outcome.error));
+            return;
+        }
+        flashStatus(tr("%1 is intact: every block matches its hash.").arg(displayName(title)));
+        QMessageBox::information(this, tr("Verify game"),
+                                 tr("%1 is intact: every block matches its hash.").arg(displayName(title)));
+    });
 }
 
 ExtractDestinationDialog::ExtractDestinationDialog(const SwitchTitle &title, const QString &suggested, QWidget *parent)

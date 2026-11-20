@@ -1,9 +1,9 @@
 #include "models/falcommdlreader.h"
+#include "core/storedreader.h"
 #include "models/meshpreview.h"
 #include "models/model3d.h"
 #include "core/simpletable.h"
 
-#include <QFile>
 #include <QObject>
 #include <QStringList>
 #include <QtEndian>
@@ -724,18 +724,10 @@ int FalcomMdlReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> FalcomMdlReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
-        return nullptr;
-    }
-    return fromBytes(file.readAll(), error, path);
+    return fromBytes(*bytes, error, path);
 }
 
 std::unique_ptr<Document> FalcomMdlReader::fromBytes(const QByteArray &data, QString *error, const QString &path)

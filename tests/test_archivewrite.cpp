@@ -220,6 +220,33 @@ private slots:
         QCOMPARE(archive->entryData(size_t(archive->find("b.txt"))), QByteArray("bye"));
     }
 
+    void replacingASharedEntryLeavesItsTwinAlone()
+    {
+        QString error;
+        QByteArray sarc = *writeSarc({{"a.txt", "AAAA", 4, 0}, {"b.txt", "AAAA", 4, 0}, {"c.txt", "", 4, 0}}, {}, &error);
+        const qsizetype first = 0x20, second = 0x20 + 16;
+        qToLittleEndian(qFromLittleEndian<quint32>(sarc.constData() + first + 8), sarc.data() + second + 8);
+        qToLittleEndian(qFromLittleEndian<quint32>(sarc.constData() + first + 12), sarc.data() + second + 12);
+        const auto before = readSarc(sarc, &error);
+        QVERIFY2(before, qPrintable(error));
+        const QString replaced = before->entries[0].name;
+        const QString twin = before->entries[1].name;
+        QCOMPARE(before->entries[0].data, before->entries[1].data);
+
+        const auto changed = replaceSarcEntry(sarc, replaced, "ZZZZZZ", &error);
+        QVERIFY2(changed, qPrintable(error));
+        const auto after = readSarc(*changed, &error);
+        QVERIFY2(after, qPrintable(error));
+        for (const SarcEntry &e : after->entries) {
+            if (e.name == replaced)
+                QCOMPARE(e.data, QByteArray("ZZZZZZ"));
+            else if (e.name == twin)
+                QCOMPARE(e.data, before->entries[1].data);
+            else
+                QVERIFY(e.data.isEmpty());
+        }
+    }
+
     void refusesBadReplacements()
     {
         QString error;
@@ -266,6 +293,21 @@ private slots:
         QCOMPARE(*back, data);
         if (data == QByteArray(5000, 'z'))
             QVERIFY(packed.size() < 200);
+    }
+
+    void refusesYaz0SizesTheDataCannotReach()
+    {
+        QByteArray header("Yaz0", 4);
+        header.append(char(0x30)).append(3, '\0').append(8, '\0');
+        QByteArray tiny = header + QByteArray(4, '\0');
+        QString error;
+        QVERIFY(!decompress(tiny, &error));
+        QVERIFY2(error.contains("Yaz0"), qPrintable(error));
+
+        const QByteArray zeros(1 << 20, '\0');
+        const auto back = decompress(compressYaz0(zeros, 0), &error);
+        QVERIFY2(back, qPrintable(error));
+        QCOMPARE(*back, zeros);
     }
 
     void keepsCompressionSettings()

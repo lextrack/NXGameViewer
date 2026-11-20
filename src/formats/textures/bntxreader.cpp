@@ -1,8 +1,8 @@
 #include "textures/bntxreader.h"
 
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
-#include <QFile>
 #include <QObject>
 #include <QtEndian>
 
@@ -222,7 +222,7 @@ QString bntxTextureProblem(const BntxTexture &t)
     const std::optional<PixelFormat> format = bntxPixelFormat(t.format);
     if (!format)
         return QObject::tr("Pixel format %1 cannot be shown yet").arg(bntxFormatName(t.format));
-    if (t.width <= 0 || t.height <= 0 || t.width > BntxReader::kMaxSide || t.height > BntxReader::kMaxSide)
+    if (t.width <= 0 || t.height <= 0 || t.width > kMaxTextureSide || t.height > kMaxTextureSide)
         return QObject::tr("Unexpected size %1 × %2").arg(t.width).arg(t.height);
     if (t.tileMode != 0)
         return QObject::tr("Linear (not block-linear) textures cannot be shown yet");
@@ -276,18 +276,10 @@ int BntxReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> BntxReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> BntxReader::readBytes(const QByteArray &data, const QString &, QString *error) const

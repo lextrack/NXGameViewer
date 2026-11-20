@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 
+#include "formats/textures/texturesearch.h"
 #include "gameextractdialog.h"
 #include "formats/archives/rpf6reader.h"
 #include "formats/data/bymlreader.h"
@@ -646,11 +647,13 @@ void MainWindow::connectSignals()
     connect(m_fsModel, &QFileSystemModel::directoryLoaded, this, &MainWindow::revealCurrentFile);
     connect(m_fsModel, &QFileSystemModel::directoryLoaded, this, &MainWindow::revealPendingMatch);
     connect(m_fsModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::revealPendingMatch);
-    connect(m_tree->verticalScrollBar(), &QAbstractSlider::actionTriggered, this, [this] { m_pendingMatch.clear(); });
-    connect(m_tree, &QAbstractItemView::pressed, this, [this] { m_pendingMatch.clear(); });
     connect(m_fsModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::revealCurrentFile);
-    connect(m_tree->verticalScrollBar(), &QAbstractSlider::actionTriggered, this, [this] { m_revealCurrent = false; });
-    connect(m_tree, &QAbstractItemView::pressed, this, [this] { m_revealCurrent = false; });
+    const auto userMovedTree = [this] {
+        m_pendingMatch.clear();
+        m_revealCurrent = false;
+    };
+    connect(m_tree->verticalScrollBar(), &QAbstractSlider::actionTriggered, this, userMovedTree);
+    connect(m_tree, &QAbstractItemView::pressed, this, userMovedTree);
     connect(m_fileFilter, &QLineEdit::textChanged, m_searchTimer, qOverload<>(&QTimer::start));
     connect(m_searchTimer, &QTimer::timeout, this, &MainWindow::startFileSearch);
     connect(m_fileFilter, &QLineEdit::returnPressed, this, &MainWindow::nextMatch);
@@ -790,12 +793,6 @@ void MainWindow::startNextLoad()
                 if (used)
                     result.format = used->name();
             }
-            auto archiveOf = [](const Document &doc) -> std::shared_ptr<const Archive> {
-                for (const auto &t : doc.tables)
-                    if (auto a = t->archive())
-                        return a;
-                return nullptr;
-            };
             auto enter = [&](const std::shared_ptr<const Archive> &archive, int index, const FormatReader *with) {
                 const ArchiveEntry &entry = archive->entries[size_t(index)];
                 if (with) {
@@ -813,7 +810,7 @@ void MainWindow::startNextLoad()
                 const QString &name = entries[i];
                 if (!result.document)
                     break;
-                const auto archive = archiveOf(*result.document);
+                const auto archive = result.document->archive();
                 const int index = archive ? archive->find(name) : -1;
                 if (index < 0) {
                     result.document.reset();
@@ -823,7 +820,7 @@ void MainWindow::startNextLoad()
                 enter(archive, index, i + 1 == entries.size() ? forced : nullptr);
             }
             for (int depth = 0; descend && !forced && result.document && depth < 8; ++depth) {
-                const auto archive = archiveOf(*result.document);
+                const auto archive = result.document->archive();
                 if (!archive || archive->entries.size() != 1)
                     break;
                 const bool showsItself = std::any_of(result.document->tables.begin(), result.document->tables.end(),

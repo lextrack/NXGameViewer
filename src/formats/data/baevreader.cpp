@@ -2,7 +2,9 @@
 
 #include "archives/decompress.h"
 #include "archives/zstddictionaries.h"
+#include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "models/bfresreader.h"
 
 #include <QDir>
@@ -14,8 +16,6 @@
 #include <QObject>
 #include <QtEndian>
 
-#include <bit>
-#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -23,35 +23,10 @@ namespace {
 constexpr int kMaxItems = 1 << 20;
 constexpr qint64 kMaxBfres = qint64{256} * 1024 * 1024;
 
-struct Failure : std::runtime_error
-{
-    using std::runtime_error::runtime_error;
-};
-
-class Reader
+class Reader : public ByteReader
 {
 public:
-    explicit Reader(const QByteArray &data) : m_data(data) {}
-
-    void need(qint64 at, qint64 size) const
-    {
-        if (at < 0 || size < 0 || at > m_data.size() - size)
-            throw Failure(QObject::tr("An offset points outside the file.").toStdString());
-    }
-    quint32 u32(qint64 at) const
-    {
-        need(at, 4);
-        return qFromLittleEndian<quint32>(m_data.constData() + at);
-    }
-    float f32(qint64 at) const { return std::bit_cast<float>(u32(at)); }
-    qint64 u64(qint64 at) const
-    {
-        need(at, 8);
-        const quint64 v = qFromLittleEndian<quint64>(m_data.constData() + at);
-        if (v > quint64(m_data.size()))
-            throw Failure(QObject::tr("A pointer points outside the file.").toStdString());
-        return qint64(v);
-    }
+    using ByteReader::ByteReader;
     struct Array
     {
         qint64 at = 0;
@@ -60,21 +35,12 @@ public:
     };
     Array array(qint64 at) const
     {
-        Array a{u64(at), int(u32(at + 8)), qint64(u32(at + 12))};
-        if (a.count < 0 || a.count > kMaxItems || (a.count > 0 && a.stride <= 0))
-            throw Failure(QObject::tr("The file lists an impossible number of items.").toStdString());
+        Array a{ptr(at), count(u32(at + 8), kMaxItems), qint64(u32(at + 12))};
+        if (a.count > 0 && a.stride <= 0)
+            parseFailure(QObject::tr("The file lists an impossible number of items."));
         need(a.at, qint64(a.count) * a.stride);
         return a;
     }
-    QString cstr(qint64 at) const
-    {
-        need(at, 1);
-        const char *p = m_data.constData() + at;
-        return QString::fromUtf8(p, qsizetype(qstrnlen(p, uint(m_data.size() - at))));
-    }
-
-private:
-    const QByteArray &m_data;
 };
 
 struct Param
@@ -100,7 +66,7 @@ Param readParam(const Reader &r, qint64 at)
         return {QStringLiteral("(%1, %2, %3)").arg(x).arg(y).arg(z), QJsonArray{double(x), double(y), double(z)}};
     }
     case 5: {
-        const QString v = r.cstr(r.u64(at + 8));
+        const QString v = r.cstr(r.ptr(at + 8));
         return {u'"' + v + u'"', v};
     }
     default: return {QObject::tr("(type %1)").arg(type), QJsonValue()};
@@ -152,19 +118,11 @@ int BaevReader::score(const QString &fileName, QByteArrayView head) const
 
 std::unique_ptr<Document> BaevReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return nullptr;
-    }
     loadZstdDictionariesNear(path);
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> BaevReader::readBytes(const QByteArray &data, const QString &fileName, QString *error) const
@@ -182,11 +140,11 @@ std::unique_ptr<Document> BaevReader::readWithNames(const QByteArray &data, cons
     try {
         const Reader r(data);
         if (data.size() < 0xA8 || !data.startsWith("BFFH"))
-            throw Failure(QObject::tr("Not an animation event file (no \"BFFH\" at the start).").toStdString());
+            throw ParseFailure(QObject::tr("Not an animation event file (no \"BFFH\" at the start).").toStdString());
         const Reader::Array sections = r.array(0x10);
         if (sections.count < 1)
-            throw Failure(QObject::tr("The file has no sections.").toStdString());
-        const qint64 base = r.u64(sections.at + 0x10);
+            throw ParseFailure(QObject::tr("The file has no sections.").toStdString());
+        const qint64 base = r.ptr(sections.at + 0x10);
         r.need(base, 0x38);
         version = QStringLiteral("%1.%2.%3")
                       .arg(qFromLittleEndian<quint16>(data.constData() + base + 10))
@@ -207,12 +165,12 @@ std::unique_ptr<Document> BaevReader::readWithNames(const QByteArray &data, cons
             for (int k = 0; k < indices.count; ++k) {
                 const quint32 index = r.u32(indices.at + qint64(k) * 4);
                 if (index >= quint32(nodes.count))
-                    throw Failure(QObject::tr("An event list points past the end of the event table.").toStdString());
+                    throw ParseFailure(QObject::tr("An event list points past the end of the event table.").toStdString());
                 const qint64 node = nodes.at + qint64(index) * nodes.stride;
                 const Reader::Array events = r.array(node);
                 for (int e = 0; e < events.count; ++e) {
                     const qint64 ev = events.at + qint64(e) * events.stride;
-                    const QString name = r.cstr(r.u64(ev));
+                    const QString name = r.cstr(r.ptr(ev));
                     for (const bool hold : {false, true}) {
                         const Reader::Array list = r.array(ev + (hold ? 0x18 : 0x08));
                         for (int t = 0; t < list.count; ++t) {
@@ -221,7 +179,7 @@ std::unique_ptr<Document> BaevReader::readWithNames(const QByteArray &data, cons
                             QStringList texts;
                             QJsonArray paramJson;
                             for (int p = 0; p < params.count; ++p) {
-                                const Param param = readParam(r, r.u64(params.at + qint64(p) * params.stride));
+                                const Param param = readParam(r, r.ptr(params.at + qint64(p) * params.stride));
                                 texts << param.text;
                                 paramJson.append(param.json);
                             }
@@ -241,7 +199,7 @@ std::unique_ptr<Document> BaevReader::readWithNames(const QByteArray &data, cons
             animationJson.append(QJsonObject{{"key", animation}, {"hash", QStringLiteral("0x%1").arg(hash, 8, 16, QLatin1Char('0'))},
                                              {"events", eventJson}});
         }
-    } catch (const Failure &f) {
+    } catch (const ParseFailure &f) {
         if (error)
             *error = QString::fromStdString(f.what());
         return nullptr;

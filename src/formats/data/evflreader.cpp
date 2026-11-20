@@ -1,17 +1,16 @@
 #include "data/evflreader.h"
 
+#include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
-#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QObject>
-#include <QtEndian>
 
 #include <bit>
-#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -19,50 +18,11 @@ namespace {
 constexpr int kMaxItems = 1 << 20;
 constexpr quint16 kNone = 0xFFFF;
 
-struct Failure : std::runtime_error
-{
-    using std::runtime_error::runtime_error;
-};
-
-class Reader
+class Reader : public ByteReader
 {
 public:
-    explicit Reader(const QByteArray &data) : m_data(data) {}
-
-    void need(qint64 at, qint64 size) const
-    {
-        if (at < 0 || size < 0 || at > m_data.size() - size)
-            throw Failure(QObject::tr("An offset points outside the file.").toStdString());
-    }
-    quint8 u8(qint64 at) const
-    {
-        need(at, 1);
-        return quint8(m_data[at]);
-    }
-    quint16 u16(qint64 at) const
-    {
-        need(at, 2);
-        return qFromLittleEndian<quint16>(m_data.constData() + at);
-    }
-    quint32 u32(qint64 at) const
-    {
-        need(at, 4);
-        return qFromLittleEndian<quint32>(m_data.constData() + at);
-    }
-    qint64 ptr(qint64 at) const
-    {
-        need(at, 8);
-        const quint64 v = qFromLittleEndian<quint64>(m_data.constData() + at);
-        if (v > quint64(m_data.size()))
-            throw Failure(QObject::tr("A pointer points outside the file.").toStdString());
-        return qint64(v);
-    }
-    int count(quint32 n) const
-    {
-        if (n > quint32(kMaxItems))
-            throw Failure(QObject::tr("The file lists an impossible number of items.").toStdString());
-        return int(n);
-    }
+    using ByteReader::ByteReader;
+    int count(quint32 n) const { return ByteReader::count(n, kMaxItems); }
     QString str(qint64 at) const
     {
         const qint64 p = ptr(at);
@@ -70,7 +30,7 @@ public:
             return {};
         const quint16 n = u16(p);
         need(p + 2, n);
-        return QString::fromUtf8(m_data.constData() + p + 2, n);
+        return QString::fromUtf8(data().constData() + p + 2, n);
     }
     QStringList dic(qint64 at) const
     {
@@ -82,9 +42,6 @@ public:
             names << str(at + 0x20 + qint64(i) * 0x10);
         return names;
     }
-
-private:
-    const QByteArray &m_data;
 };
 
 struct Item
@@ -152,7 +109,7 @@ Item container(const Reader &r, qint64 at)
     if (at == 0)
         return {{}, QJsonObject()};
     if (r.u8(at) != 1)
-        throw Failure(QObject::tr("A parameter list has the wrong type.").toStdString());
+        throw ParseFailure(QObject::tr("A parameter list has the wrong type.").toStdString());
     const QStringList names = r.dic(r.ptr(at + 8));
     QStringList texts;
     QJsonObject json;
@@ -239,7 +196,7 @@ QString actorAction(const std::vector<Actor> &actors, quint16 actor, quint16 act
 void readTimeline(const Reader &r, qint64 tl, Flow &f)
 {
     if (r.u32(tl) != 0x4E494C54u)
-        throw Failure(QObject::tr("The timeline is missing.").toStdString());
+        throw ParseFailure(QObject::tr("The timeline is missing.").toStdString());
     f.hasTimeline = true;
     f.duration = std::bit_cast<float>(r.u32(tl + 0x10));
     const int actorCount = r.count(r.u16(tl + 0x14));
@@ -296,7 +253,7 @@ void readTimeline(const Reader &r, qint64 tl, Flow &f)
 void readFlowchart(const Reader &r, qint64 chart, Flow &f)
 {
     if (r.u32(chart) != 0x4C465645u)
-        throw Failure(QObject::tr("The flowchart is missing.").toStdString());
+        throw ParseFailure(QObject::tr("The flowchart is missing.").toStdString());
     f.hasChart = true;
     const int actorCount = r.count(r.u16(chart + 0x10));
     const int eventCount = r.count(r.u16(chart + 0x16));
@@ -443,19 +400,19 @@ void readFlowchart(const Reader &r, qint64 chart, Flow &f)
 Flow parseFlow(const QByteArray &data)
 {
     if (data.size() < 0x48 || !data.startsWith(QByteArray("BFEVFL\0\0", 8)))
-        throw Failure(QObject::tr("Not an event flow (no \"BFEVFL\" at the start).").toStdString());
+        throw ParseFailure(QObject::tr("Not an event flow (no \"BFEVFL\" at the start).").toStdString());
     const Reader r(data);
     Flow f;
     f.version = r.u16(8);
     if (r.u16(0x0C) != 0xFEFF)
-        throw Failure(QObject::tr("Only little-endian event flows are supported.").toStdString());
+        throw ParseFailure(QObject::tr("Only little-endian event flows are supported.").toStdString());
     f.json.insert("version", QStringLiteral("0x%1").arg(f.version, 0, 16));
     if (r.u16(0x20) > 0)
         readFlowchart(r, r.ptr(r.ptr(0x28)), f);
     if (r.u16(0x22) > 0)
         readTimeline(r, r.ptr(r.ptr(0x38)), f);
     if (!f.hasChart && !f.hasTimeline)
-        throw Failure(QObject::tr("This event file has neither a flowchart nor a timeline.").toStdString());
+        throw ParseFailure(QObject::tr("This event file has neither a flowchart nor a timeline.").toStdString());
     f.json.insert("name", f.hasChart ? f.name : f.timelineName);
     return f;
 }
@@ -469,18 +426,10 @@ int EvflReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> EvflReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> EvflReader::readBytes(const QByteArray &data, const QString &, QString *error) const
@@ -488,7 +437,7 @@ std::unique_ptr<Document> EvflReader::readBytes(const QByteArray &data, const QS
     Flow f;
     try {
         f = parseFlow(data);
-    } catch (const Failure &failure) {
+    } catch (const ParseFailure &failure) {
         if (error)
             *error = QString::fromStdString(failure.what());
         return nullptr;

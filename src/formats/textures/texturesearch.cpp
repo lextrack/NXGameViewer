@@ -141,14 +141,6 @@ QString textureStem(const QString &name)
     return name.section(u'/', -1).section(u'\\', -1).section(u'.', 0, 0).toLower();
 }
 
-std::shared_ptr<const Archive> archiveIn(const Document &doc)
-{
-    for (const auto &t : doc.tables)
-        if (auto a = t->archive())
-            return a;
-    return nullptr;
-}
-
 bool holdsTextures(const QString &entryName)
 {
     static const QStringList extensions = {"wtd", "wtx", "dds", "xtx", "bntx", "png", "tga"};
@@ -243,7 +235,7 @@ void findInSharedArchives(const QString &location, const std::shared_ptr<const A
         const std::shared_ptr<const Document> doc = cachedDocument(cache, QStringLiteral("file:") + path, [&] {
             return std::shared_ptr<const Document>(registry.open(path, nullptr, nullptr));
         });
-        const std::shared_ptr<const Archive> archive = doc ? archiveIn(*doc) : nullptr;
+        const std::shared_ptr<const Archive> archive = doc ? doc->archive() : nullptr;
         if (archive && findInArchive(archive, QStringLiteral("file:") + path, model, registry, wanted, images, cache))
             return;
     }

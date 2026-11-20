@@ -1,5 +1,7 @@
 #include "data/ed9bytecode.h"
 
+#include "core/bytes.h"
+
 #include <QtEndian>
 
 #include <cstring>
@@ -35,8 +37,7 @@ QString commandGroup(int group)
     return QStringLiteral("group%1").arg(group);
 }
 
-quint32 u32(const QByteArray &d, qsizetype pos) { return qFromLittleEndian<quint32>(d.constData() + pos); }
-qint32 i32(const QByteArray &d, qsizetype pos) { return qint32(u32(d, pos)); }
+qint32 i32(const QByteArray &d, qsizetype pos) { return qint32(le32(d, pos)); }
 
 QString hex(quint32 v) { return QStringLiteral("0x") + QString::number(v, 16).toUpper(); }
 
@@ -94,7 +95,7 @@ Instruction decode(const QByteArray &data, qsizetype pos)
     case 0x00: {
         const int size = uchar(data[a]);
         if (size == 4) {
-            in.arguments = valueText(data, u32(data, a + 1));
+            in.arguments = valueText(data, le32(data, a + 1));
         } else {
             quint64 v = 0;
             for (int i = 0; i < size && i < 8; ++i)
@@ -110,14 +111,14 @@ Instruction decode(const QByteArray &data, qsizetype pos)
         in.arguments = QString::number(i32(data, a));
         break;
     case 0x0B: case 0x0E: case 0x0F:
-        in.arguments = QStringLiteral("→ %1").arg(hex(u32(data, a)));
+        in.arguments = QStringLiteral("→ %1").arg(hex(le32(data, a)));
         break;
     case 0x0C:
         in.arguments = QStringLiteral("function %1").arg(qFromLittleEndian<quint16>(data.constData() + a));
         break;
     case 0x22: case 0x23:
         in.arguments = QStringLiteral("%1 . %2, %3 args")
-                           .arg(valueText(data, u32(data, a)), valueText(data, u32(data, a + 4)))
+                           .arg(valueText(data, le32(data, a)), valueText(data, le32(data, a + 4)))
                            .arg(uchar(data[a + 8]));
         break;
     case 0x24:
@@ -127,7 +128,7 @@ Instruction decode(const QByteArray &data, qsizetype pos)
                            .arg(uchar(data[a + 2]));
         break;
     case 0x25: case 0x28:
-        in.arguments = hex(u32(data, a));
+        in.arguments = hex(le32(data, a));
         break;
     case 0x26:
         in.arguments = QString::number(qFromLittleEndian<quint16>(data.constData() + a));

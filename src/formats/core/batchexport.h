@@ -1,7 +1,6 @@
 #pragma once
 
 #include "core/registry.h"
-#include "textures/texturesearch.h"
 
 #include <QList>
 #include <QString>
@@ -65,10 +64,7 @@ using ExtractProgress = std::function<bool(qint64 done, qint64 total)>;
 
 QStringList collectBatchFiles(const QStringList &paths);
 QString commonParentFolder(const QStringList &paths);
-QString commonFolderOf(const QStringList &files);
 QStringList batchOutputBases(const QStringList &files, const BatchOptions &options);
-BatchFileResult exportBatchFile(const FormatRegistry &registry, const QString &source, const QString &outputBase,
-                                const BatchOptions &options, TextureFolderCache *textures = nullptr);
 QByteArray tableToCsv(const Table &table);
 
 std::vector<ExtractItem> diskExtractItems(const QStringList &files, const BatchOptions &options);

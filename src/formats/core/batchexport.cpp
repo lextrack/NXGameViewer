@@ -2,6 +2,7 @@
 
 #include "core/paths.h"
 #include "models/gltfwriter.h"
+#include "textures/texturesearch.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -125,20 +126,12 @@ private:
     bool m_sameAsOriginal = false;
 };
 
-std::shared_ptr<const Archive> archiveOf(const Document &doc)
-{
-    for (const auto &t : doc.tables)
-        if (auto a = t->archive())
-            return a;
-    return nullptr;
-}
-
 std::shared_ptr<const Archive> containerOf(const Document &doc)
 {
     for (const auto &t : doc.tables)
         if (t->hasModel())
             return nullptr;
-    return archiveOf(doc);
+    return doc.archive();
 }
 
 const Table *archiveTable(const Document &doc)
@@ -276,10 +269,11 @@ QStringList collectBatchFiles(const QStringList &paths)
     return files;
 }
 
-namespace {
-
-QString commonAncestor(const QStringList &folders)
+QString commonParentFolder(const QStringList &paths)
 {
+    QStringList folders;
+    for (const QString &path : paths)
+        folders << QFileInfo(path).absolutePath();
     if (folders.isEmpty())
         return {};
     QStringList common = QDir::cleanPath(folders.first()).split(u'/');
@@ -291,25 +285,7 @@ QString commonAncestor(const QStringList &folders)
         common = common.first(n);
     }
     const QString joined = common.join(u'/');
-    return joined.isEmpty() && !folders.first().isEmpty() && folders.first().startsWith(u'/') ? QStringLiteral("/") : joined;
-}
-
-}
-
-QString commonParentFolder(const QStringList &paths)
-{
-    QStringList folders;
-    for (const QString &path : paths)
-        folders << QFileInfo(QFileInfo(path).absoluteFilePath()).absolutePath();
-    return commonAncestor(folders);
-}
-
-QString commonFolderOf(const QStringList &files)
-{
-    QStringList folders;
-    for (const QString &file : files)
-        folders << QFileInfo(file).absolutePath();
-    return commonAncestor(folders);
+    return joined.isEmpty() && folders.first().startsWith(u'/') ? QStringLiteral("/") : joined;
 }
 
 QStringList batchOutputBases(const QStringList &files, const BatchOptions &options)
@@ -359,43 +335,6 @@ QByteArray tableToCsv(const Table &table)
         out += fields.join(u',').toUtf8() + '\n';
     }
     return out;
-}
-
-BatchFileResult exportBatchFile(const FormatRegistry &registry, const QString &source, const QString &outputBase,
-                                const BatchOptions &options, TextureFolderCache *textures)
-{
-    BatchFileResult result;
-    result.source = source;
-    try {
-        const FormatReader *used = nullptr;
-        QString error;
-        std::unique_ptr<Document> doc = registry.open(source, &used, &error);
-        std::shared_ptr<const Archive> container;
-        for (int depth = 0; doc && depth < 4; ++depth) {
-            const std::shared_ptr<const Archive> archive = containerOf(*doc);
-            if (!archive || archive->entries.size() != 1)
-                break;
-            const FormatReader *inner = nullptr;
-            QString innerError;
-            std::unique_ptr<Document> next = registry.openEntry(*archive, 0, &inner, &innerError);
-            if (!next)
-                break;
-            doc = std::move(next);
-            used = inner;
-            container = archive;
-        }
-        if (!doc) {
-            result.error = error;
-            return result;
-        }
-        const bool recognised = used && used->name() != QStringLiteral("Hex");
-        Writer writer(options, result);
-        convertDocument(*doc, recognised, outputBase, options, writer, result, registry, textures, source, container,
-                        false);
-    } catch (const std::bad_alloc &) {
-        result.error = QObject::tr("Not enough memory to export this file.");
-    }
-    return result;
 }
 
 std::vector<ExtractItem> diskExtractItems(const QStringList &files, const BatchOptions &options)

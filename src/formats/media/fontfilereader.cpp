@@ -1,6 +1,7 @@
 #include "media/fontfilereader.h"
 
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "data/nintendofont.h"
 
 #include <QFile>
@@ -140,18 +141,10 @@ int FontFileReader::score(const QString &fileName, QByteArrayView head) const
 
 std::unique_ptr<Document> FontFileReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 256 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> FontFileReader::readBytes(const QByteArray &data, const QString &fileName, QString *error) const

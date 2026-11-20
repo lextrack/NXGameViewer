@@ -6,6 +6,8 @@
 
 #include <optional>
 
+constexpr int kMaxTextureSide = 16384;
+
 enum class PixelFormat {
     RGBA8,    // 4 bytes per pixel
     BGRA8,

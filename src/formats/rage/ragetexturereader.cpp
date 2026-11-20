@@ -1,10 +1,10 @@
 #include "rage/ragetexturereader.h"
 
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "rage/rageresource.h"
 #include "textures/texturedecode.h"
 
-#include <QFile>
 #include <QObject>
 #include <QSet>
 #include <QtEndian>
@@ -16,8 +16,6 @@
 
 namespace {
 
-constexpr int kMaxTextures = 65536;
-constexpr int kMaxSide = 16384;
 
 struct Encoding
 {
@@ -137,7 +135,7 @@ std::optional<Texture> readTexture(const RageResource &r, qint64 at, int index)
     const std::optional<quint16> width = r.u16(at + 32), height = r.u16(at + 34);
     const std::optional<quint32> code = r.u32(at + 36), pixels = r.u32(at + 76);
     const std::optional<qint64> pixelsAt = pixels ? r.offsetOf(*pixels) : std::nullopt;
-    if (!width || !height || !code || !pixelsAt || *width == 0 || *height == 0 || *width > kMaxSide || *height > kMaxSide
+    if (!width || !height || !code || !pixelsAt || *width == 0 || *height == 0 || *width > kMaxTextureSide || *height > kMaxTextureSide
         || !r.u32(at + 40))
         return std::nullopt;
     Texture t;
@@ -167,7 +165,7 @@ std::optional<std::vector<qint64>> dictionaryEntries(const RageResource &r, qint
     const std::optional<quint32> values = r.u32(at + 0x18);
     const std::optional<quint16> count = r.u16(at + 0x1C);
     const std::optional<qint64> valuesAt = values ? r.offsetOf(*values) : std::nullopt;
-    if (!valuesAt || !count || *count > kMaxTextures)
+    if (!valuesAt || !count)
         return std::nullopt;
     std::vector<qint64> entries;
     for (int i = 0; i < *count; ++i) {
@@ -319,18 +317,10 @@ int RageTextureDictionaryReader::score(const QString &, QByteArrayView head) con
 
 std::unique_ptr<Document> RageTextureDictionaryReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
-        return nullptr;
-    }
-    return parse(file.readAll(), error);
+    return parse(*bytes, error);
 }
 
 std::unique_ptr<Document> RageTextureDictionaryReader::readBytes(const QByteArray &data, const QString &, QString *error) const

@@ -1,5 +1,6 @@
 #include "unity/serializedfile.h"
 
+#include "core/bytes.h"
 #include "unity/builtintypetrees.h"
 
 #include <QHash>
@@ -37,65 +38,6 @@ QString commonString(quint32 offset)
     return QString::fromLatin1(kCommonStrings + offset);
 }
 
-class Reader
-{
-public:
-    Reader(QByteArrayView data, bool bigEndian) : m_data(data), m_big(bigEndian) {}
-
-    qsizetype pos() const { return m_pos; }
-    qsizetype size() const { return m_data.size(); }
-    void setBigEndian(bool big) { m_big = big; }
-    void seek(qsizetype pos)
-    {
-        if (pos < 0 || pos > m_data.size())
-            throw std::runtime_error("seek");
-        m_pos = pos;
-    }
-    void align(qsizetype to = 4) { seek(std::min<qsizetype>((m_pos + to - 1) / to * to, m_data.size())); }
-    QByteArrayView take(qsizetype n)
-    {
-        if (n < 0 || n > m_data.size() - m_pos)
-            throw std::runtime_error("short");
-        const QByteArrayView out = m_data.sliced(m_pos, n);
-        m_pos += n;
-        return out;
-    }
-    template <typename T> T read()
-    {
-        const char *p = take(sizeof(T)).data();
-        return m_big ? qFromBigEndian<T>(p) : qFromLittleEndian<T>(p);
-    }
-    template <typename T> T be() { return qFromBigEndian<T>(take(sizeof(T)).data()); }
-    float readFloat()
-    {
-        const quint32 bits = read<quint32>();
-        float out;
-        std::memcpy(&out, &bits, 4);
-        return out;
-    }
-    double readDouble()
-    {
-        const quint64 bits = read<quint64>();
-        double out;
-        std::memcpy(&out, &bits, 8);
-        return out;
-    }
-    QString cstring()
-    {
-        const qsizetype end = m_data.indexOf('\0', m_pos);
-        if (end < 0)
-            throw std::runtime_error("string");
-        const QString out = QString::fromUtf8(m_data.sliced(m_pos, end - m_pos));
-        m_pos = end + 1;
-        return out;
-    }
-
-private:
-    QByteArrayView m_data;
-    bool m_big;
-    qsizetype m_pos = 0;
-};
-
 int primitiveSize(const QString &type)
 {
     static const QHash<QString, int> sizes = {
@@ -120,7 +62,7 @@ bool isSigned(const QString &type)
         || type == QLatin1String("long long");
 }
 
-void readTypeTree(Reader &in, quint32 version, std::vector<TypeTreeNode> &nodes)
+void readTypeTree(ByteCursor &in, quint32 version, std::vector<TypeTreeNode> &nodes)
 {
     const qint32 count = in.read<qint32>();
     const qint32 stringSize = in.read<qint32>();
@@ -174,7 +116,7 @@ void readTypeTree(Reader &in, quint32 version, std::vector<TypeTreeNode> &nodes)
     }
 }
 
-SerializedType readType(Reader &in, const SerializedFile &file, bool refType)
+SerializedType readType(ByteCursor &in, const SerializedFile &file, bool refType)
 {
     SerializedType type;
     type.classId = in.read<qint32>();
@@ -212,7 +154,7 @@ SerializedType readType(Reader &in, const SerializedFile &file, bool refType)
 class ValueReader
 {
 public:
-    ValueReader(const std::vector<TypeTreeNode> &nodes, Reader &in) : m_nodes(nodes), m_in(in) {}
+    ValueReader(const std::vector<TypeTreeNode> &nodes, ByteCursor &in) : m_nodes(nodes), m_in(in) {}
 
     UValue read(int index, int depth)
     {
@@ -326,7 +268,7 @@ private:
     }
 
     const std::vector<TypeTreeNode> &m_nodes;
-    Reader &m_in;
+    ByteCursor &m_in;
 };
 
 }
@@ -410,7 +352,7 @@ std::optional<SerializedFile> readSerializedFile(const QByteArray &data, QString
     if (!looksLikeSerializedFile(QByteArrayView(data).first(std::min<qsizetype>(data.size(), 64))))
         return fail(QObject::tr("Not a Unity serialized file."));
     try {
-        Reader in(data, true);
+        ByteCursor in(data, true);
         SerializedFile file;
         in.be<quint32>();
         in.be<quint32>();
@@ -548,7 +490,7 @@ std::optional<UValue> readTypeTreeValue(const std::vector<TypeTreeNode> &nodes, 
         return std::nullopt;
     }
     try {
-        Reader in(data, bigEndian);
+        ByteCursor in(data, bigEndian);
         ValueReader reader(nodes, in);
         UValue value = reader.read(0, 0);
         if (consumed)
@@ -578,7 +520,7 @@ QString readObjectName(const std::vector<TypeTreeNode> &nodes, QByteArrayView da
     if (!hasName)
         return {};
     try {
-        Reader in(data, bigEndian);
+        ByteCursor in(data, bigEndian);
         ValueReader reader(nodes, in);
         return reader.readName().value_or(QString());
     } catch (const std::exception &) {

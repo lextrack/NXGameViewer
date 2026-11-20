@@ -1,13 +1,14 @@
 #include "data/msbtreader.h"
 
+#include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QObject>
-#include <QtEndian>
 
 #include <algorithm>
 #include <map>
@@ -17,25 +18,11 @@ namespace {
 constexpr qsizetype kHeaderSize = 0x20;
 constexpr int kMaxItems = 1'000'000;
 
-class Reader
+class Reader : public ByteReader
 {
 public:
-    Reader(const QByteArray &data, bool littleEndian) : m_data(data), m_little(littleEndian) {}
-
-    bool fits(qsizetype at, qsizetype size) const { return at >= 0 && size >= 0 && at <= m_data.size() - size; }
-    quint16 u16(qsizetype at) const
-    {
-        return m_little ? qFromLittleEndian<quint16>(m_data.constData() + at) : qFromBigEndian<quint16>(m_data.constData() + at);
-    }
-    quint32 u32(qsizetype at) const
-    {
-        return m_little ? qFromLittleEndian<quint32>(m_data.constData() + at) : qFromBigEndian<quint32>(m_data.constData() + at);
-    }
-    const QByteArray &data() const { return m_data; }
-
-private:
-    const QByteArray &m_data;
-    bool m_little;
+    using ByteReader::ByteReader;
+    bool fits(qsizetype at, qsizetype size) const { return at >= 0 && size >= 0 && at <= this->size() - size; }
 };
 
 struct Section
@@ -195,18 +182,10 @@ int MsbtReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> MsbtReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> MsbtReader::readBytes(const QByteArray &data, const QString &fileName, QString *error) const

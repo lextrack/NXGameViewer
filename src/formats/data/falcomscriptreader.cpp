@@ -1,8 +1,9 @@
 #include "data/falcomscriptreader.h"
+#include "core/bytes.h"
+#include "core/storedreader.h"
 #include "data/ed9bytecode.h"
 #include "core/simpletable.h"
 
-#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -92,7 +93,6 @@ struct PoolString
     QString text;
 };
 
-quint32 u32At(const QByteArray &d, qsizetype pos) { return qFromLittleEndian<quint32>(d.constData() + pos); }
 
 std::optional<quint32> stringOffset(const QByteArray &data, quint32 tagged)
 {
@@ -135,18 +135,10 @@ int FalcomScriptReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> FalcomScriptReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return nullptr;
-    }
-    return fromBytes(file.readAll(), error);
+    return fromBytes(*bytes, error);
 }
 
 std::unique_ptr<Document> FalcomScriptReader::fromBytes(const QByteArray &data, QString *error)
@@ -159,7 +151,7 @@ std::unique_ptr<Document> FalcomScriptReader::fromBytes(const QByteArray &data, 
     if (data.size() < kHeaderSize || !data.startsWith("#scp"))
         return fail(QObject::tr("Not a Falcom script (no \"#scp\" at the start)."));
 
-    const quint32 tableOffset = u32At(data, 4), count = u32At(data, 8);
+    const quint32 tableOffset = le32(data, 4), count = le32(data, 8);
     if (tableOffset < kHeaderSize || count > kMaxFunctions
         || qint64(tableOffset) + qint64(count) * kFunctionEntrySize > data.size())
         return fail(QObject::tr("The function table does not fit in the file."));
@@ -169,12 +161,12 @@ std::unique_ptr<Document> FalcomScriptReader::fromBytes(const QByteArray &data, 
     for (quint32 i = 0; i < count; ++i) {
         const qsizetype e = tableOffset + qsizetype(i) * kFunctionEntrySize;
         Function &f = functions[i];
-        f.start = u32At(data, e);
+        f.start = le32(data, e);
         f.inputs = quint8(data[e + 4]);
         f.flags = quint16(uchar(data[e + 5]) | uchar(data[e + 6]) << 8);
         f.outputs = quint8(data[e + 7]);
-        f.hash = u32At(data, e + 24);
-        const std::optional<quint32> nameOffset = stringOffset(data, u32At(data, e + 28));
+        f.hash = le32(data, e + 24);
+        const std::optional<quint32> nameOffset = stringOffset(data, le32(data, e + 28));
         if (!nameOffset || f.start > quint32(data.size()))
             return fail(QObject::tr("Function %1 in the table is broken.").arg(i));
         f.nameOffset = *nameOffset;
@@ -189,7 +181,7 @@ std::unique_ptr<Document> FalcomScriptReader::fromBytes(const QByteArray &data, 
     }
     std::vector<quint32> references;
     for (qsizetype i = tableEnd; i + 4 <= data.size(); ++i) {
-        const quint32 v = u32At(data, i);
+        const quint32 v = le32(data, i);
         if (v >> 30 != kTagString)
             continue;
         const quint32 offset = v & 0x3FFFFFFF;

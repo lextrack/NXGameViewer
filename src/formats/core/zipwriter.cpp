@@ -1,6 +1,5 @@
 #include "core/zipwriter.h"
 
-#include <QBuffer>
 #include <QDateTime>
 #include <QIODevice>
 #include <QObject>
@@ -115,14 +114,6 @@ QString ZipWriter::error() const
     return m->error;
 }
 
-bool ZipWriter::addBytes(const QString &name, const QByteArray &data)
-{
-    QByteArray copy = data;
-    QBuffer buffer(&copy);
-    buffer.open(QIODevice::ReadOnly);
-    return addFile(name, &buffer);
-}
-
 bool ZipWriter::addFile(const QString &name, QIODevice *source, const std::function<bool()> &keepGoing)
 {
     if (m->failed || m->finished)
@@ -135,7 +126,9 @@ bool ZipWriter::addFile(const QString &name, QIODevice *source, const std::funct
     e.name = name.toUtf8();
     e.when = m->now;
     e.offset = m->out->pos();
-    if (e.name.isEmpty() || e.name.size() > 0xFFFF || e.offset > kMaxZip32)
+    if (e.name.isEmpty() || e.name.size() > 0xFFFF)
+        return m->fail(QObject::tr("\"%1\" is not a valid name for a file in a zip.").arg(name));
+    if (e.offset > kMaxZip32)
         return m->fail(QObject::tr("The zip file would be larger than 4 GB."));
     if (!m->write(m->localHeader(e)))
         return false;

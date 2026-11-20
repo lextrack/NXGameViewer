@@ -2,6 +2,9 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QObject>
+
+#include <new>
 
 StoredReader storedFileReader(const QString &path, qint64 fileSize, const QDateTime &modified)
 {
@@ -22,4 +25,34 @@ StoredReader storedBytesReader(QByteArray data)
             return QByteArray();
         return data.mid(qsizetype(offset), qsizetype(size));
     };
+}
+
+QString fileTooLargeMessage(qint64 maxSize)
+{
+    constexpr qint64 kGb = qint64{1024} * 1024 * 1024;
+    if (maxSize >= kGb && maxSize % kGb == 0)
+        return QObject::tr("File is larger than %1 GB.").arg(maxSize / kGb);
+    return QObject::tr("File is larger than %1 MB.").arg(maxSize / (1024 * 1024));
+}
+
+std::optional<QByteArray> readWholeFile(const QString &path, qint64 maxSize, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return std::nullopt;
+    }
+    if (file.size() > maxSize) {
+        if (error)
+            *error = fileTooLargeMessage(maxSize);
+        return std::nullopt;
+    }
+    try {
+        return file.readAll();
+    } catch (const std::bad_alloc &) {
+        if (error)
+            *error = QObject::tr("Not enough memory to open this file.");
+        return std::nullopt;
+    }
 }

@@ -1,5 +1,6 @@
 #include "switchfs/switchnup.h"
 
+#include "core/bytes.h"
 #include "core/paths.h"
 #include "switchfs/switchnca.h"
 #include "switchfs/switchncz.h"
@@ -9,7 +10,6 @@
 #include <QFileInfo>
 #include <QObject>
 #include <QSet>
-#include <QtEndian>
 
 #include <algorithm>
 #include <cstring>
@@ -27,21 +27,6 @@ constexpr qint64 kMaxMeta = qint64{16} * 1024 * 1024;
 constexpr quint32 kNone = 0xFFFFFFFFu;
 constexpr qint64 kChunk = qint64{8} * 1024 * 1024;
 constexpr int kMaxDepth = 256;
-
-quint16 u16(const QByteArray &b, qint64 at)
-{
-    return qFromLittleEndian<quint16>(b.constData() + at);
-}
-
-quint32 u32(const QByteArray &b, qint64 at)
-{
-    return qFromLittleEndian<quint32>(b.constData() + at);
-}
-
-quint64 u64(const QByteArray &b, qint64 at)
-{
-    return qFromLittleEndian<quint64>(b.constData() + at);
-}
 
 struct NupPackageRecord
 {
@@ -104,12 +89,12 @@ std::optional<Nup> openNup(const QString &path, QString *error)
     const QByteArray sb = n.file->read(0, std::min(fileSize, kSuperblockSize));
     if (sb.size() < kSuperblockSize || !sb.startsWith(QByteArrayLiteral("NUP\x01")))
         return fail(QObject::tr("Not a NUP file."));
-    const qint64 headerSize = u16(sb, 4);
-    const qint64 tocOffset = qint64(u64(sb, 8)), tocSize = qint64(u64(sb, 0x10));
-    n.blobOffset = qint64(u64(sb, 0x38));
-    const quint64 declaredSize = u64(sb, 0x40);
-    const quint32 packageCount = u32(sb, 0x48);
-    if (u32(sb, 0x4C) != 0)
+    const qint64 headerSize = le16(sb, 4);
+    const qint64 tocOffset = qint64(le64(sb, 8)), tocSize = qint64(le64(sb, 0x10));
+    n.blobOffset = qint64(le64(sb, 0x38));
+    const quint64 declaredSize = le64(sb, 0x40);
+    const quint32 packageCount = le32(sb, 0x48);
+    if (le32(sb, 0x4C) != 0)
         return fail(QObject::tr("This NUP file uses features the app cannot read yet."));
     if (headerSize < kSuperblockSize || tocOffset != headerSize || tocSize < kTocHeaderSize || tocSize > kMaxToc
         || tocOffset > fileSize - tocSize || n.blobOffset % 16 != 0 || n.blobOffset < tocOffset + tocSize
@@ -120,12 +105,12 @@ std::optional<Nup> openNup(const QString &path, QString *error)
         return fail(QObject::tr("The NUP file is cut off."));
     if (QCryptographicHash::hash(n.toc, QCryptographicHash::Sha256) != sb.mid(0x18, 32))
         return fail(QObject::tr("The NUP table of contents does not match its checksum: the file is damaged."));
-    if (!n.toc.startsWith(QByteArrayLiteral("TOC\x01")) || u32(n.toc, 4) != packageCount)
+    if (!n.toc.startsWith(QByteArrayLiteral("TOC\x01")) || le32(n.toc, 4) != packageCount)
         return fail(damaged);
-    n.dirCount = qint64(u64(n.toc, 8));
-    n.fileCount = qint64(u64(n.toc, 0x10));
-    n.poolAt = qint64(u64(n.toc, 0x18));
-    n.poolSize = qint64(u64(n.toc, 0x20));
+    n.dirCount = qint64(le64(n.toc, 8));
+    n.fileCount = qint64(le64(n.toc, 0x10));
+    n.poolAt = qint64(le64(n.toc, 0x18));
+    n.poolSize = qint64(le64(n.toc, 0x20));
     if (n.dirCount < 0 || n.fileCount < 0 || n.dirCount > tocSize / kDirSize || n.fileCount > tocSize / kFileSize
         || n.dirCount + n.fileCount > qint64(kNone) || n.poolAt < 0 || n.poolSize < 0 || n.poolAt > tocSize - n.poolSize)
         return fail(damaged);
@@ -138,14 +123,14 @@ std::optional<Nup> openNup(const QString &path, QString *error)
     for (quint32 i = 0; i < packageCount; ++i) {
         const qint64 at = kTocHeaderSize + kPackageSize * i;
         NupPackageRecord p;
-        p.titleId = u64(n.toc, at);
-        p.rootDir = u32(n.toc, at + 8);
-        p.exefsDir = u32(n.toc, at + 0x0C);
-        p.romfsDir = u32(n.toc, at + 0x10);
-        p.version = u32(n.toc, at + 0x14);
+        p.titleId = le64(n.toc, at);
+        p.rootDir = le32(n.toc, at + 8);
+        p.exefsDir = le32(n.toc, at + 0x0C);
+        p.romfsDir = le32(n.toc, at + 0x10);
+        p.version = le32(n.toc, at + 0x14);
         p.kind = quint8(n.toc[at + 0x18]);
-        p.metaOffset = qint64(u64(n.toc, at + 0x20));
-        p.metaSize = u32(n.toc, at + 0x28);
+        p.metaOffset = qint64(le64(n.toc, at + 0x20));
+        p.metaSize = le32(n.toc, at + 0x28);
         for (quint32 dir : {p.rootDir, p.exefsDir, p.romfsDir})
             if (dir != kNone && qint64(dir) >= n.dirCount)
                 return fail(damaged);
@@ -180,14 +165,14 @@ bool listTree(const Nup &n, quint32 dir, const QString &prefix, std::vector<NupE
             return fail(damaged);
         seen.insert(p.dir);
         const qint64 at = n.dirsAt + kDirSize * p.dir;
-        const qint64 first = u32(n.toc, at + 8), count = u32(n.toc, at + 0x0C);
+        const qint64 first = le32(n.toc, at + 8), count = le32(n.toc, at + 0x0C);
         if (n.childrenAt + 4 * (first + count) > n.childrenEnd)
             return fail(damaged);
         for (qint64 c = count - 1; c >= 0; --c) {
-            const quint32 node = u32(n.toc, n.childrenAt + 4 * (first + c));
+            const quint32 node = le32(n.toc, n.childrenAt + 4 * (first + c));
             if (qint64(node) < n.dirCount) {
                 const qint64 childAt = n.dirsAt + kDirSize * node;
-                const std::optional<QString> name = n.name(u32(n.toc, childAt), u32(n.toc, childAt + 4));
+                const std::optional<QString> name = n.name(le32(n.toc, childAt), le32(n.toc, childAt + 4));
                 if (!name || name->isEmpty())
                     return fail(damaged);
                 stack.push_back({node, p.prefix + *name + u'/', p.depth + 1});
@@ -197,14 +182,14 @@ bool listTree(const Nup &n, quint32 dir, const QString &prefix, std::vector<NupE
             if (index >= n.fileCount)
                 return fail(damaged);
             const qint64 fileAt = n.filesAt + kFileSize * index;
-            const std::optional<QString> name = n.name(u32(n.toc, fileAt), u32(n.toc, fileAt + 4));
+            const std::optional<QString> name = n.name(le32(n.toc, fileAt), le32(n.toc, fileAt + 4));
             if (!name || name->isEmpty())
                 return fail(damaged);
             NupEntry e;
             e.path = p.prefix + *name;
-            e.size = qint64(u64(n.toc, fileAt + 8));
-            e.extentOffset = qint64(u64(n.toc, fileAt + 0x10));
-            e.extentSize = qint64(u64(n.toc, fileAt + 0x18));
+            e.size = qint64(le64(n.toc, fileAt + 8));
+            e.extentOffset = qint64(le64(n.toc, fileAt + 0x10));
+            e.extentSize = qint64(le64(n.toc, fileAt + 0x18));
             e.sha256 = n.toc.mid(fileAt + 0x20, 32);
             e.codec = quint8(n.toc[fileAt + 0x40]);
             if (!isSafeRelativePath(e.path))
@@ -249,8 +234,8 @@ std::map<quint16, QByteArray> readMeta(const Nup &n, const NupPackageRecord &p)
         return out;
     const QByteArray meta = n.file->read(p.metaOffset, p.metaSize);
     for (qint64 at = 0; at + 8 <= meta.size();) {
-        const quint16 type = u16(meta, at);
-        const qint64 size = u32(meta, at + 4);
+        const quint16 type = le16(meta, at);
+        const qint64 size = le32(meta, at + 4);
         if (size > meta.size() - at - 8)
             break;
         out.emplace(type, meta.mid(at + 8, size));

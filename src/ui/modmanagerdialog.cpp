@@ -18,6 +18,8 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <numeric>
+
 namespace {
 
 constexpr int kIndexRole = Qt::UserRole + 1;
@@ -272,23 +274,35 @@ void ModManagerDialog::updateButtons()
     m_undo->setEnabled(exists && !m_files->selectedItems().isEmpty());
 }
 
-bool ModManagerDialog::removeWithFallback(const std::function<bool(bool, QString *)> &remove)
+bool ModManagerDialog::removeWithFallback(const std::vector<Removal> &removals)
 {
-    QString error;
-    if (!m_useTrash) {
-        if (remove(false, &error))
-            return true;
-        QMessageBox::warning(this, windowTitle(), error);
-        return false;
+    std::vector<size_t> failed;
+    QStringList errors;
+    auto attempt = [&](const std::vector<size_t> &which, bool toTrash) {
+        failed.clear();
+        errors.clear();
+        for (size_t i : which) {
+            QString error;
+            if (!removals[i](toTrash, &error)) {
+                failed.push_back(i);
+                errors << error;
+            }
+        }
+    };
+    std::vector<size_t> all(removals.size());
+    std::iota(all.begin(), all.end(), size_t(0));
+    attempt(all, m_useTrash);
+    if (!failed.empty() && m_useTrash) {
+        if (!confirm(tr("Delete permanently?"),
+                     tr("%1<br><br>The trash is not available here. Delete %n item(s) permanently instead? This cannot "
+                        "be undone.", nullptr, int(failed.size()))
+                         .arg(errors.first())))
+            return false;
+        attempt(std::vector<size_t>(failed), false);
     }
-    if (remove(true, &error))
+    if (failed.empty())
         return true;
-    if (!confirm(tr("Delete permanently?"),
-                 tr("%1<br><br>The trash is not available here. Delete permanently instead? This cannot be undone.").arg(error)))
-        return false;
-    if (remove(false, &error))
-        return true;
-    QMessageBox::warning(this, windowTitle(), error);
+    QMessageBox::warning(this, windowTitle(), errors.join(u'\n'));
     return false;
 }
 
@@ -305,10 +319,10 @@ bool ModManagerDialog::removeSelectedFiles()
                      .arg(paths.mid(0, 12).join(QStringLiteral("<br>")).toHtmlEscaped()
                           + (paths.size() > 12 ? QStringLiteral("<br>…") : QString()))))
         return false;
-    bool all = true;
+    std::vector<Removal> removals;
     for (const QString &path : paths)
-        all = removeWithFallback([&](bool toTrash, QString *error) { return removeModFile(mod->folder, path, toTrash, error); })
-              && all;
+        removals.push_back([&mod, path](bool toTrash, QString *error) { return removeModFile(mod->folder, path, toTrash, error); });
+    const bool all = removeWithFallback(removals);
     reload(mod->id);
     return all;
 }
@@ -318,14 +332,13 @@ bool ModManagerDialog::deleteSelectedMod()
     const std::optional<ModRecord> mod = selectedMod();
     if (!mod || !mod->exists())
         return false;
-    const std::optional<ModLocation> location = parseModFolder(mod->folder);
-    const QString target = location && layoutHasModName(location->layout) ? modRoot(mod->folder) : mod->folder;
+    const QString target = modDeleteTarget(mod->folder);
     if (!confirm(tr("Delete the mod %1?").arg(modDisplayName(*mod)),
                  tr("This moves the folder to the trash:<br><tt>%1</tt><br>(%n file(s))", nullptr,
                     int(listModFiles(mod->folder).size()))
                      .arg(QDir::toNativeSeparators(target).toHtmlEscaped())))
         return false;
-    if (!removeWithFallback([&](bool toTrash, QString *error) { return deleteMod(mod->folder, toTrash, error); }))
+    if (!removeWithFallback({[&](bool toTrash, QString *error) { return deleteMod(mod->folder, toTrash, error); }}))
         return false;
     std::vector<ModRecord> history = loadModHistory();
     forgetMod(history, mod->id);

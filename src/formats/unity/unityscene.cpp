@@ -20,7 +20,6 @@
 
 namespace {
 
-constexpr int kInfluences = 4;
 constexpr float kSentinelTime = 1e30f;
 
 enum Attribute { Position = 1, Rotation = 2, Scale = 3, Euler = 4 };

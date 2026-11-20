@@ -60,8 +60,8 @@ private slots:
         QCOMPARE(commonParentFolder({"/g/a/x.tbl", "/g/b/c/y.tbl"}), QString("/g"));
         QCOMPARE(commonParentFolder({"/g/a"}), QString("/g"));
         QCOMPARE(commonParentFolder({"/a/x", "/b/y"}), QString("/"));
-        QCOMPARE(commonFolderOf({"/out/m/a.glb", "/out/m/a.csv"}), QString("/out/m"));
-        QCOMPARE(commonFolderOf({"/out/m/a.glb", "/out/n/b.png"}), QString("/out"));
+        QCOMPARE(commonParentFolder({"/out/m/a.glb", "/out/m/a.csv"}), QString("/out/m"));
+        QCOMPARE(commonParentFolder({"/out/m/a.glb", "/out/n/b.png"}), QString("/out"));
     }
 
     void singleFilesGoStraightIntoTheOutputFolder()
@@ -101,18 +101,13 @@ private slots:
         options.kinds = BatchPicture | BatchModel | BatchSound | BatchJson | BatchCsv;
         options.baseFolder = game;
         options.outputFolder = out;
+        options.keepUnconverted = false;
         const QStringList files = collectBatchFiles({game});
-        const QStringList bases = batchOutputBases(files, options);
         FormatRegistry registry;
-        TextureFolderCache textures;
-        QStringList written;
-        for (qsizetype i = 0; i < files.size(); ++i) {
-            const BatchFileResult r = exportBatchFile(registry, files[i], bases[i], options, &textures);
+        const ExtractReport report = runExtraction(registry, diskExtractItems(files, options), options);
+        for (const BatchFileResult &r : report.results)
             QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
-            written += r.written;
-        }
-        for (QString &w : written)
-            w = QDir(out).relativeFilePath(w);
+        const QStringList written = writtenUnder(report, out);
         QVERIFY(written.contains("models/hero.glb"));
         QVERIFY(readFile(out + "/models/hero.glb").startsWith("glTF"));
         QVERIFY(written.contains("data/hero.json"));
@@ -134,14 +129,15 @@ private slots:
         options.outputFolder = dir.filePath("out");
         FormatRegistry registry;
 
-        BatchFileResult r = exportBatchFile(registry, dir.filePath("hero.mdl"), dir.filePath("out/hero"), options);
-        QVERIFY(r.written.isEmpty());
-        QCOMPARE(r.kept, QStringList{dir.filePath("out/hero.glb")});
+        ExtractReport report = runExtraction(registry, diskExtractItems({dir.filePath("hero.mdl")}, options), options);
+        QCOMPARE(report.results.size(), 1);
+        QVERIFY(report.results.front().written.isEmpty());
+        QCOMPARE(report.results.front().kept, QStringList{dir.filePath("out/hero.glb")});
         QCOMPARE(readFile(dir.filePath("out/hero.glb")), QByteArray("old"));
 
         options.replaceExisting = true;
-        r = exportBatchFile(registry, dir.filePath("hero.mdl"), dir.filePath("out/hero"), options);
-        QCOMPARE(r.written, QStringList{dir.filePath("out/hero.glb")});
+        report = runExtraction(registry, diskExtractItems({dir.filePath("hero.mdl")}, options), options);
+        QCOMPARE(writtenUnder(report, dir.filePath("out")), QStringList{"hero.glb"});
         QVERIFY(readFile(dir.filePath("out/hero.glb")).startsWith("glTF"));
     }
 
@@ -152,10 +148,12 @@ private slots:
         BatchOptions options;
         options.kinds = BatchSound | BatchJson;
         options.outputFolder = dir.filePath("out");
+        options.keepUnconverted = false;
         FormatRegistry registry;
-        const BatchFileResult r = exportBatchFile(registry, dir.filePath("hero.mdl"), dir.filePath("out/hero"), options);
-        QVERIFY(r.written.isEmpty());
-        QVERIFY(r.error.isEmpty());
+        const ExtractReport report = runExtraction(registry, diskExtractItems({dir.filePath("hero.mdl")}, options), options);
+        QVERIFY(writtenUnder(report, dir.filePath("out")).isEmpty());
+        for (const BatchFileResult &r : report.results)
+            QVERIFY(r.error.isEmpty());
     }
 
     void extractionOpensNestedArchivesAndConverts()
@@ -203,13 +201,9 @@ private slots:
         BatchOptions options;
         options.outputFolder = dir.filePath("both");
         options.keepOriginals = true;
-        auto archive = [&] {
-            std::unique_ptr<Document> doc = registry.open(dir.filePath("pack.sarc"), nullptr, nullptr);
-            for (const auto &t : doc->tables)
-                if (auto a = t->archive())
-                    return a;
-            return std::shared_ptr<const Archive>();
-        }();
+        const std::unique_ptr<Document> doc = registry.open(dir.filePath("pack.sarc"), nullptr, nullptr);
+        QVERIFY(doc);
+        const std::shared_ptr<const Archive> archive = doc->archive();
         QVERIFY(archive);
         ExtractReport report = runExtraction(registry, archiveExtractItems(archive, {0, 1}, dir.filePath("pack.sarc"), "pack.sarc", options), options);
         QCOMPARE(writtenUnder(report, options.outputFolder), (QStringList{"hero.glb", "hero.mdl", "note.bin"}));

@@ -1,7 +1,7 @@
 #include "data/jsonreader.h"
+#include "core/storedreader.h"
 #include "core/treetable.h"
 
-#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -57,26 +57,15 @@ int JsonReader::score(const QString &fileName, QByteArrayView head) const
 
 std::unique_ptr<Document> JsonReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
-        return nullptr;
-    }
-    if (file.size() > kMaxSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return nullptr;
-    }
-
-    return readBytes(file.readAll(), path, error);
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxSize, error);
+    return bytes ? readBytes(*bytes, path, error) : nullptr;
 }
 
 std::unique_ptr<Document> JsonReader::readBytes(const QByteArray &data, const QString &, QString *error) const
 {
     if (data.size() > kMaxSize) {
         if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
+            *error = fileTooLargeMessage(kMaxSize);
         return nullptr;
     }
     QJsonParseError parseError;

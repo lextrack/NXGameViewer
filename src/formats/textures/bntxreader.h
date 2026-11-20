@@ -47,7 +47,6 @@ class BntxReader : public FormatReader
 {
 public:
     static constexpr qint64 kMaxFileSize = qint64{512} * 1024 * 1024;
-    static constexpr int kMaxSide = 16384;
     static constexpr int kMaxTextures = 10000;
     static constexpr int kMaxEmbedded = 64;
 

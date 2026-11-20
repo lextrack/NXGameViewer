@@ -3,8 +3,8 @@
 #include "archives/sarcwriter.h"
 #include "core/contentkind.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
-#include <QFile>
 #include <QObject>
 
 namespace {
@@ -34,18 +34,10 @@ int SarcReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> SarcReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 1 GB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> SarcReader::readBytes(const QByteArray &data, const QString &, QString *error) const

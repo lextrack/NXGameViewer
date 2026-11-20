@@ -1,5 +1,6 @@
 #include "textures/texturedecode.h"
 
+#include "core/bytes.h"
 #include "textures/astc.h"
 
 #include <QtEndian>
@@ -12,9 +13,6 @@
 namespace {
 
 using Rgba = std::array<quint8, 4>;
-
-quint16 u16At(const uchar *p) { return qFromLittleEndian<quint16>(p); }
-quint32 u32At(const uchar *p) { return qFromLittleEndian<quint32>(p); }
 
 quint8 expand(quint32 value, int bits)
 {
@@ -34,7 +32,7 @@ Rgba from565(quint16 v)
 
 void decodeBc1Colours(const uchar *block, Rgba out[16], bool alwaysFourColours)
 {
-    const quint16 c0 = u16At(block), c1 = u16At(block + 2);
+    const quint16 c0 = le16(block), c1 = le16(block + 2);
     Rgba p[4] = {from565(c0), from565(c1), {}, {}};
     if (c0 > c1 || alwaysFourColours) {
         for (int i = 0; i < 3; ++i) {
@@ -48,7 +46,7 @@ void decodeBc1Colours(const uchar *block, Rgba out[16], bool alwaysFourColours)
         p[2][3] = 255;
         p[3] = {0, 0, 0, 0};
     }
-    const quint32 indices = u32At(block + 4);
+    const quint32 indices = le32(block + 4);
     for (int i = 0; i < 16; ++i)
         out[i] = p[(indices >> (2 * i)) & 3];
 }
@@ -264,19 +262,19 @@ Rgba decodeUncompressed(PixelFormat format, const uchar *p)
     case PixelFormat::R8: return {p[0], p[0], p[0], 255};
     case PixelFormat::RG8: return {p[0], p[1], 0, 255};
     case PixelFormat::RGB565: {
-        const quint16 v = u16At(p);
+        const quint16 v = le16(p);
         return {expand(v >> 11, 5), expand((v >> 5) & 63, 6), expand(v & 31, 5), 255};
     }
     case PixelFormat::RGBA4: {
-        const quint16 v = u16At(p);
+        const quint16 v = le16(p);
         return {expand(v & 15, 4), expand((v >> 4) & 15, 4), expand((v >> 8) & 15, 4), expand(v >> 12, 4)};
     }
     case PixelFormat::RGB5A1: {
-        const quint16 v = u16At(p);
+        const quint16 v = le16(p);
         return {expand(v & 31, 5), expand((v >> 5) & 31, 5), expand((v >> 10) & 31, 5), quint8(v & 0x8000 ? 255 : 0)};
     }
     case PixelFormat::RGB10A2: {
-        const quint32 v = u32At(p);
+        const quint32 v = le32(p);
         return {quint8((v >> 2) & 255), quint8((v >> 12) & 255), quint8((v >> 22) & 255), expand(v >> 30, 2)};
     }
     default: return {};
@@ -513,19 +511,20 @@ int mipBlockHeight(int baseBlockHeight, int heightInElements)
     return blockHeight;
 }
 
-std::optional<QByteArray> deswizzleBlockLinear(QByteArrayView data, int widthInElements, int heightInElements,
-                                               int bytesPerElement, int blockHeight)
+namespace {
+
+bool validBlockLinear(int widthInElements, int heightInElements, int bytesPerElement, int blockHeight)
 {
-    if (widthInElements <= 0 || heightInElements <= 0 || bytesPerElement <= 0 || bytesPerElement > 16
-        || blockHeight < 1 || blockHeight > 32 || (blockHeight & (blockHeight - 1)))
-        return std::nullopt;
-    if (data.size() < blockLinearSize(widthInElements, heightInElements, bytesPerElement, blockHeight))
-        return std::nullopt;
+    return widthInElements > 0 && heightInElements > 0 && bytesPerElement > 0 && bytesPerElement <= 16
+        && blockHeight >= 1 && blockHeight <= 32 && (blockHeight & (blockHeight - 1)) == 0;
+}
 
-    const qsizetype widthInGobs = (qsizetype(widthInElements) * bytesPerElement + 63) / 64;
+template <typename Copy>
+void forEachBlockLinearElement(int widthInElements, int heightInElements, int bytesPerElement, int blockHeight,
+                               Copy &&copy)
+{
     const qsizetype rowBytes = qsizetype(widthInElements) * bytesPerElement;
-    QByteArray out(rowBytes * heightInElements, Qt::Uninitialized);
-
+    const qsizetype widthInGobs = (rowBytes + 63) / 64;
     for (int y = 0; y < heightInElements; ++y) {
         const qsizetype rowBase = qsizetype(y / (8 * blockHeight)) * 512 * blockHeight * widthInGobs
                                 + qsizetype((y % (8 * blockHeight)) / 8) * 512
@@ -534,35 +533,38 @@ std::optional<QByteArray> deswizzleBlockLinear(QByteArrayView data, int widthInE
             const qsizetype xb = qsizetype(x) * bytesPerElement;
             const qsizetype address = rowBase + (xb / 64) * 512 * blockHeight
                                     + ((xb % 64) / 32) * 256 + ((xb % 32) / 16) * 32 + (xb % 16);
-            std::memcpy(out.data() + y * rowBytes + xb, data.data() + address, size_t(bytesPerElement));
+            copy(y * rowBytes + xb, address);
         }
     }
+}
+
+}
+
+std::optional<QByteArray> deswizzleBlockLinear(QByteArrayView data, int widthInElements, int heightInElements,
+                                               int bytesPerElement, int blockHeight)
+{
+    if (!validBlockLinear(widthInElements, heightInElements, bytesPerElement, blockHeight)
+        || data.size() < blockLinearSize(widthInElements, heightInElements, bytesPerElement, blockHeight))
+        return std::nullopt;
+    QByteArray out(qsizetype(widthInElements) * bytesPerElement * heightInElements, Qt::Uninitialized);
+    forEachBlockLinearElement(widthInElements, heightInElements, bytesPerElement, blockHeight,
+                              [&](qsizetype linear, qsizetype swizzled) {
+                                  std::memcpy(out.data() + linear, data.data() + swizzled, size_t(bytesPerElement));
+                              });
     return out;
 }
 
 std::optional<QByteArray> swizzleBlockLinear(QByteArrayView linear, int widthInElements, int heightInElements,
                                              int bytesPerElement, int blockHeight)
 {
-    if (widthInElements <= 0 || heightInElements <= 0 || bytesPerElement <= 0 || bytesPerElement > 16
-        || blockHeight < 1 || blockHeight > 32 || (blockHeight & (blockHeight - 1)))
+    if (!validBlockLinear(widthInElements, heightInElements, bytesPerElement, blockHeight)
+        || linear.size() < qsizetype(widthInElements) * bytesPerElement * heightInElements)
         return std::nullopt;
-    const qsizetype rowBytes = qsizetype(widthInElements) * bytesPerElement;
-    if (linear.size() < rowBytes * heightInElements)
-        return std::nullopt;
-
-    const qsizetype widthInGobs = (rowBytes + 63) / 64;
     QByteArray out(blockLinearSize(widthInElements, heightInElements, bytesPerElement, blockHeight), '\0');
-    for (int y = 0; y < heightInElements; ++y) {
-        const qsizetype rowBase = qsizetype(y / (8 * blockHeight)) * 512 * blockHeight * widthInGobs
-                                + qsizetype((y % (8 * blockHeight)) / 8) * 512
-                                + ((y % 8) / 2) * 64 + (y % 2) * 16;
-        for (int x = 0; x < widthInElements; ++x) {
-            const qsizetype xb = qsizetype(x) * bytesPerElement;
-            const qsizetype address = rowBase + (xb / 64) * 512 * blockHeight
-                                    + ((xb % 64) / 32) * 256 + ((xb % 32) / 16) * 32 + (xb % 16);
-            std::memcpy(out.data() + address, linear.data() + y * rowBytes + xb, size_t(bytesPerElement));
-        }
-    }
+    forEachBlockLinearElement(widthInElements, heightInElements, bytesPerElement, blockHeight,
+                              [&](qsizetype from, qsizetype swizzled) {
+                                  std::memcpy(out.data() + swizzled, linear.data() + from, size_t(bytesPerElement));
+                              });
     return out;
 }
 

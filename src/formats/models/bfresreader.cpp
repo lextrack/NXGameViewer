@@ -1,5 +1,6 @@
 #include "models/bfresreader.h"
 
+#include "core/storedreader.h"
 #include "textures/bntxreader.h"
 #include "archives/decompress.h"
 #include "archives/zstddictionaries.h"
@@ -372,6 +373,10 @@ bool readAttribute(const View &v, const Vertices &vertices, const Attribute &a, 
     const bool unorm = type == 1, snorm = type == 2, floating = type == 5;
     const bool isSigned = snorm || type == 4 || type == 9;
     const qint64 elementSize = bytes ? qint64(components) * bytes : 4;
+    if (vertices.count > 1 && buffer.stride <= 0)
+        return false;
+    if (vertices.count > 0)
+        v.raw(buffer.start + qint64(vertices.count - 1) * buffer.stride + a.offset, elementSize);
     out.assign(size_t(vertices.count) * 4, 0.f);
     for (int i = 0; i < vertices.count; ++i) {
         float *dst = &out[size_t(i) * 4];
@@ -1387,18 +1392,10 @@ int BfresReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> BfresReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 1 GB.");
-        return nullptr;
-    }
-    const QByteArray data = file.readAll();
+    const QByteArray data = *bytes;
     try {
         return parse(data, path, error);
     } catch (const BadOffset &) {

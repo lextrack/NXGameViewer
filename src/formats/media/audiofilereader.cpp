@@ -1,5 +1,6 @@
 #include "media/audiofilereader.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
 #include <QAudioBuffer>
 #include <QAudioDecoder>
@@ -168,7 +169,7 @@ std::unique_ptr<Document> AudioFileReader::read(const QString &path, QString *er
     const QFileInfo info(path);
     if (info.size() > kMaxFileSize) {
         if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
+            *error = fileTooLargeMessage(kMaxFileSize);
         return nullptr;
     }
     QString container;

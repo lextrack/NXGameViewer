@@ -1,6 +1,7 @@
 #include "data/tblfile.h"
 
-#include <QFile>
+#include "core/storedreader.h"
+
 #include <QObject>
 #include <QStringDecoder>
 #include <QtEndian>
@@ -26,16 +27,13 @@ void setError(QString *error, const QString &message)
 
 bool TblFile::loadFromFile(const QString &path, QString *error)
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        setError(error, QObject::tr("Cannot open %1: %2").arg(path, file.errorString()));
+    QString e;
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, &e);
+    if (!bytes) {
+        setError(error, QObject::tr("Cannot open %1: %2").arg(path, e));
         return false;
     }
-    if (file.size() > kMaxFileSize) {
-        setError(error, QObject::tr("File is larger than 256 MB."));
-        return false;
-    }
-    return load(file.readAll(), error);
+    return load(*bytes, error);
 }
 
 bool TblFile::load(const QByteArray &data, QString *error)

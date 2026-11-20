@@ -2,6 +2,7 @@
 
 #include "archives/zstddictionaries.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "sound/nxopusreader.h"
 
 #include <QDir>
@@ -296,18 +297,10 @@ int BwavReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> BwavReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> BwavReader::readBytes(const QByteArray &input, const QString &fileName, QString *error) const

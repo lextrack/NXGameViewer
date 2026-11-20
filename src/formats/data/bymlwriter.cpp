@@ -1,5 +1,7 @@
 #include "data/bymlwriter.h"
 
+#include "data/bymlformat.h"
+
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -13,47 +15,18 @@
 #include <map>
 #include <numeric>
 #include <set>
-#include <stdexcept>
 #include <vector>
 
 namespace {
 
-enum Type : quint8 {
-    HashDict = 0x20,
-    HashDictRemap = 0x21,
-    String = 0xA0,
-    Binary = 0xA1,
-    FileData = 0xA2,
-    Array = 0xC0,
-    Dict = 0xC1,
-    StringTable = 0xC2,
-    PathTable = 0xC3,
-    Bool = 0xD0,
-    Int = 0xD1,
-    Float = 0xD2,
-    UInt = 0xD3,
-    Int64 = 0xD4,
-    UInt64 = 0xD5,
-    Double = 0xD6,
-    Null = 0xFF,
-};
+using namespace byml;
 
 constexpr int kMaxDepth = 256;
 constexpr qint64 kMaxOutput = qint64{0xFFFFFFFF};
 
-struct Failure : std::runtime_error
-{
-    using std::runtime_error::runtime_error;
-};
-
 [[noreturn]] void failAt(const QString &path, const QString &message)
 {
-    throw Failure((path.isEmpty() ? message : QObject::tr("%1: %2").arg(path, message)).toStdString());
-}
-
-bool isContainer(quint8 type)
-{
-    return type == Array || type == Dict || type == HashDict || type == HashDictRemap;
+    throw ParseFailure((path.isEmpty() ? message : QObject::tr("%1: %2").arg(path, message)).toStdString());
 }
 
 struct Node
@@ -69,13 +42,10 @@ struct Node
     std::vector<quint32> remap;
 };
 
-class TreeReader
+class TreeReader : public Bytes
 {
 public:
-    explicit TreeReader(const QByteArray &data) : m_data(data), m_little(data.startsWith("YB")) {}
-
-    bool little() const { return m_little; }
-    quint16 version() const { return u16(2); }
+    using Bytes::Bytes;
 
     Node root()
     {
@@ -85,63 +55,15 @@ public:
         if (version() < 4 && root != 0 && u8(root) == PathTable)
             failAt({}, QObject::tr("BYML files with a path table cannot be written yet."));
         if (keys)
-            m_keys = table(keys);
+            m_keys = stringTable(keys);
         if (strings)
-            m_strings = table(strings);
+            m_strings = stringTable(strings);
         if (root == 0)
             return {};
         return container(root, 0);
     }
 
 private:
-    void need(qint64 at, qint64 size) const
-    {
-        if (at < 0 || size < 0 || at > m_data.size() - size)
-            failAt({}, QObject::tr("The original file has an offset outside the file."));
-    }
-    quint8 u8(qint64 at) const
-    {
-        need(at, 1);
-        return quint8(m_data[at]);
-    }
-    quint16 u16(qint64 at) const
-    {
-        need(at, 2);
-        return m_little ? qFromLittleEndian<quint16>(m_data.constData() + at) : qFromBigEndian<quint16>(m_data.constData() + at);
-    }
-    quint32 u24(qint64 at) const
-    {
-        need(at, 3);
-        const auto *p = reinterpret_cast<const uchar *>(m_data.constData() + at);
-        return m_little ? quint32(p[0] | p[1] << 8 | p[2] << 16) : quint32(p[2] | p[1] << 8 | p[0] << 16);
-    }
-    quint32 u32(qint64 at) const
-    {
-        need(at, 4);
-        return m_little ? qFromLittleEndian<quint32>(m_data.constData() + at) : qFromBigEndian<quint32>(m_data.constData() + at);
-    }
-    quint64 u64(qint64 at) const
-    {
-        need(at, 8);
-        return m_little ? qFromLittleEndian<quint64>(m_data.constData() + at) : qFromBigEndian<quint64>(m_data.constData() + at);
-    }
-
-    QStringList table(qint64 at) const
-    {
-        if (u8(at) != StringTable)
-            failAt({}, QObject::tr("A string table of the original file has the wrong type."));
-        const quint32 count = u24(at + 1);
-        need(at + 4, qint64(count) * 4);
-        QStringList out;
-        for (quint32 i = 0; i < count; ++i) {
-            const qint64 start = at + u32(at + 4 + qint64(i) * 4);
-            need(start, 1);
-            const char *p = m_data.constData() + start;
-            out << QString::fromUtf8(p, qsizetype(qstrnlen(p, uint(m_data.size() - start))));
-        }
-        return out;
-    }
-
     Node container(qint64 at, int depth)
     {
         if (depth > kMaxDepth)
@@ -209,7 +131,7 @@ private:
             if (type == FileData)
                 n.alignment = u32(raw + 4);
             need(start, size);
-            n.bytes = m_data.mid(start, size);
+            n.bytes = data().mid(start, size);
             break;
         }
         case Int64:
@@ -224,8 +146,6 @@ private:
         return n;
     }
 
-    const QByteArray &m_data;
-    bool m_little;
     QStringList m_keys;
     QStringList m_strings;
 };
@@ -668,7 +588,7 @@ std::optional<QByteArray> bymlFromJson(const QJsonValue &edited, const QByteArra
                             && edited.toArray().first().isNull();
         const Node merged = emptyRoot ? Node{} : merge(edited, &schema, {}, 0);
         return Writer(reader.little(), reader.version()).write(merged);
-    } catch (const Failure &f) {
+    } catch (const ParseFailure &f) {
         if (error)
             *error = QString::fromStdString(f.what());
     } catch (const std::bad_alloc &) {

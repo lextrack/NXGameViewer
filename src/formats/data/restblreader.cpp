@@ -2,11 +2,11 @@
 
 #include "archives/zstddictionaries.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "data/bcsvreader.h"
 
 #include <QDir>
 #include <QDirIterator>
-#include <QFile>
 #include <QMutex>
 #include <QObject>
 #include <QtEndian>
@@ -116,19 +116,11 @@ int RestblReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> RestblReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return nullptr;
-    }
     loadZstdDictionariesNear(path);
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> RestblReader::readBytes(const QByteArray &data, const QString &, QString *error) const

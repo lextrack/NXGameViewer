@@ -1,6 +1,8 @@
 #include "data/bymlreader.h"
 
+#include "core/storedreader.h"
 #include "core/treetable.h"
+#include "data/bymlformat.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -11,43 +13,15 @@
 #include <QtEndian>
 
 #include <bit>
-#include <stdexcept>
 
 namespace {
 
-enum Type : quint8 {
-    HashDict = 0x20,
-    HashDictRemap = 0x21,
-    String = 0xA0,
-    Binary = 0xA1,
-    FileData = 0xA2,
-    Array = 0xC0,
-    Dict = 0xC1,
-    StringTable = 0xC2,
-    PathTable = 0xC3,
-    Bool = 0xD0,
-    Int = 0xD1,
-    Float = 0xD2,
-    UInt = 0xD3,
-    Int64 = 0xD4,
-    UInt64 = 0xD5,
-    Double = 0xD6,
-    Null = 0xFF,
-};
+using namespace byml;
 
-struct Failure : std::runtime_error
-{
-    using std::runtime_error::runtime_error;
-};
-
-class Parser
+class Parser : public Bytes
 {
 public:
-    Parser(const QByteArray &data, BymlLimits limits) : m_data(data), m_limits(limits)
-    {
-        m_little = data.startsWith("YB");
-        m_version = u16(2);
-    }
+    Parser(const QByteArray &data, BymlLimits limits) : Bytes(data), m_limits(limits) {}
 
     QJsonValue parse(std::vector<TreeRow> *rows)
     {
@@ -55,7 +29,7 @@ public:
         const quint32 keys = u32(4);
         const quint32 strings = u32(8);
         quint32 root = u32(12);
-        if (m_version < 4 && root != 0 && u8(root) == PathTable && m_data.size() >= 20)
+        if (version() < 4 && root != 0 && u8(root) == PathTable && size() >= 20)
             root = u32(16);
         if (keys)
             m_keys = stringTable(keys);
@@ -69,59 +43,10 @@ public:
     }
 
 private:
-    void need(qint64 at, qint64 size) const
-    {
-        if (at < 0 || size < 0 || at > m_data.size() - size)
-            throw Failure(QObject::tr("An offset points outside the file.").toStdString());
-    }
-    quint8 u8(qint64 at) const
-    {
-        need(at, 1);
-        return quint8(m_data[at]);
-    }
-    quint16 u16(qint64 at) const
-    {
-        need(at, 2);
-        return m_little ? qFromLittleEndian<quint16>(m_data.constData() + at) : qFromBigEndian<quint16>(m_data.constData() + at);
-    }
-    quint32 u24(qint64 at) const
-    {
-        need(at, 3);
-        const auto *p = reinterpret_cast<const uchar *>(m_data.constData() + at);
-        return m_little ? quint32(p[0] | p[1] << 8 | p[2] << 16) : quint32(p[2] | p[1] << 8 | p[0] << 16);
-    }
-    quint32 u32(qint64 at) const
-    {
-        need(at, 4);
-        return m_little ? qFromLittleEndian<quint32>(m_data.constData() + at) : qFromBigEndian<quint32>(m_data.constData() + at);
-    }
-    quint64 u64(qint64 at) const
-    {
-        need(at, 8);
-        return m_little ? qFromLittleEndian<quint64>(m_data.constData() + at) : qFromBigEndian<quint64>(m_data.constData() + at);
-    }
-
-    QStringList stringTable(qint64 at) const
-    {
-        if (u8(at) != StringTable)
-            throw Failure(QObject::tr("A string table has the wrong type.").toStdString());
-        const quint32 count = u24(at + 1);
-        need(at + 4, qint64(count) * 4);
-        QStringList out;
-        out.reserve(count);
-        for (quint32 i = 0; i < count; ++i) {
-            const qint64 start = at + u32(at + 4 + qint64(i) * 4);
-            need(start, 1);
-            const char *p = m_data.constData() + start;
-            out << QString::fromUtf8(p, qsizetype(qstrnlen(p, uint(m_data.size() - start))));
-        }
-        return out;
-    }
-
     void add(const QString &path, const QString &type, const QString &value, QVariant sort = {})
     {
         if (++m_count > m_limits.maxValues)
-            throw Failure(QObject::tr("The file has more values than this app can show.").toStdString());
+            throw ParseFailure(QObject::tr("The file has more values than this app can show.").toStdString());
         if (m_rows)
             m_rows->push_back({path, type, value, std::move(sort)});
     }
@@ -131,7 +56,7 @@ private:
     QJsonValue container(qint64 at, const QString &path, int depth)
     {
         if (depth > m_limits.maxDepth)
-            throw Failure(QObject::tr("The data is nested too deeply.").toStdString());
+            throw ParseFailure(QObject::tr("The data is nested too deeply.").toStdString());
         const quint8 type = u8(at);
         const quint32 count = u24(at + 1);
         switch (type) {
@@ -172,7 +97,7 @@ private:
             return out;
         }
         default:
-            throw Failure(QObject::tr("Unknown BYML container type 0x%1.").arg(type, 2, 16, QLatin1Char('0')).toStdString());
+            throw ParseFailure(QObject::tr("Unknown BYML container type 0x%1.").arg(type, 2, 16, QLatin1Char('0')).toStdString());
         }
     }
 
@@ -195,7 +120,7 @@ private:
             const quint32 size = u32(raw);
             const qint64 start = raw + (type == FileData ? 8 : 4);
             need(start, size);
-            const QByteArray bytes = m_data.mid(start, size);
+            const QByteArray bytes = data().mid(start, size);
             add(path, QStringLiteral("binary"),
                 QObject::tr("%n byte(s): %1", nullptr, int(size)).arg(QString::fromLatin1(bytes.left(32).toHex(' '))));
             return QString::fromLatin1(bytes.toBase64());
@@ -239,10 +164,7 @@ private:
         }
     }
 
-    const QByteArray &m_data;
     BymlLimits m_limits;
-    bool m_little = true;
-    int m_version = 0;
     QStringList m_keys;
     QStringList m_strings;
     std::vector<TreeRow> *m_rows = nullptr;
@@ -270,18 +192,10 @@ int BymlReader::score(const QString &fileName, QByteArrayView head) const
 
 std::unique_ptr<Document> BymlReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 256 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::optional<QJsonValue> BymlReader::toJson(const QByteArray &data, QString *error, BymlLimits limits)
@@ -293,7 +207,7 @@ std::optional<QJsonValue> BymlReader::toJson(const QByteArray &data, QString *er
     }
     try {
         return Parser(data, limits).parse(nullptr);
-    } catch (const Failure &f) {
+    } catch (const ParseFailure &f) {
         if (error)
             *error = QString::fromStdString(f.what());
     }
@@ -310,7 +224,7 @@ std::unique_ptr<Document> BymlReader::readBytes(const QByteArray &data, const QS
     std::vector<TreeRow> rows;
     try {
         Parser(data, {}).parse(&rows);
-    } catch (const Failure &f) {
+    } catch (const ParseFailure &f) {
         if (error)
             *error = QString::fromStdString(f.what());
         return nullptr;

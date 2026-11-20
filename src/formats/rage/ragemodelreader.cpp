@@ -2,6 +2,7 @@
 
 #include "archives/rpf6reader.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "models/meshpreview.h"
 #include "models/model3d.h"
 #include "rage/rageresource.h"
@@ -27,7 +28,6 @@ namespace {
 constexpr int kBoneSize = 224;
 constexpr int kMaxBones = 4096;
 constexpr int kMaxModels = 4096;
-constexpr int kMaxDrawables = 65536;
 constexpr quint32 kMaxIndices = 1u << 24;
 constexpr qint64 kMaxVertices = qint64{1} << 25;
 
@@ -421,7 +421,7 @@ std::vector<Drawable> drawables(const View &v, quint32 type, const QString &file
     } else if (type == RageModelReader::kVisualDictionaryType) {
         const quint16 count = v.u16(root + 0x24);
         const quint16 hashCount = v.u16(root + 0x1C);
-        if (count == 0 || count > kMaxDrawables)
+        if (count == 0)
             throw Damaged();
         const qint64 list = v.at(v.u32(root + 0x20));
         const std::optional<qint64> hashes = v.maybe(v.u32(root + 0x18));
@@ -553,18 +553,10 @@ int RageModelReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> RageModelReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
-        return nullptr;
-    }
-    return parse(file.readAll(), path, error);
+    return parse(*bytes, path, error);
 }
 
 std::unique_ptr<Document> RageModelReader::readBytes(const QByteArray &data, const QString &fileName, QString *error) const

@@ -16,6 +16,21 @@ Context context()
     return Context(EVP_CIPHER_CTX_new(), &EVP_CIPHER_CTX_free);
 }
 
+bool update(EVP_CIPHER_CTX *ctx, const char *in, char *out, qint64 size)
+{
+    constexpr qint64 kStep = qint64{1} << 30;
+    for (qint64 done = 0; done < size;) {
+        const int step = int(std::min(kStep, size - done));
+        int written = 0;
+        if (EVP_CipherUpdate(ctx, reinterpret_cast<unsigned char *>(out + done), &written,
+                             reinterpret_cast<const unsigned char *>(in + done), step)
+            != 1)
+            return false;
+        done += step;
+    }
+    return true;
+}
+
 bool run(const EVP_CIPHER *cipher, QByteArrayView key, QByteArrayView iv, bool encrypt, const char *in, char *out,
          qint64 size)
 {
@@ -25,17 +40,7 @@ bool run(const EVP_CIPHER *cipher, QByteArrayView key, QByteArrayView iv, bool e
                     != 1)
         return false;
     EVP_CIPHER_CTX_set_padding(ctx.get(), 0);
-    constexpr qint64 kStep = qint64{1} << 30;
-    for (qint64 done = 0; done < size;) {
-        const int step = int(std::min(kStep, size - done));
-        int written = 0;
-        if (EVP_CipherUpdate(ctx.get(), reinterpret_cast<unsigned char *>(out + done), &written,
-                             reinterpret_cast<const unsigned char *>(in + done), step)
-            != 1)
-            return false;
-        done += step;
-    }
-    return true;
+    return update(ctx.get(), in, out, size);
 }
 
 const EVP_CIPHER *ecbCipher(QByteArrayView key)
@@ -60,15 +65,22 @@ QByteArray xts(QByteArrayView key, QByteArrayView data, quint64 firstSector, int
 {
     if (key.size() != 32 || sectorSize <= 0 || data.size() % sectorSize != 0)
         return {};
+    Context ctx = context();
+    if (!ctx || EVP_CipherInit_ex(ctx.get(), EVP_aes_128_xts(), nullptr,
+                                  reinterpret_cast<const unsigned char *>(key.data()), nullptr, encrypt ? 1 : 0)
+                    != 1)
+        return {};
     QByteArray out(data.size(), '\0');
-    char tweak[16];
-    for (qint64 at = 0, sector = qint64(firstSector); at < data.size(); at += sectorSize, ++sector) {
-        quint64 value = quint64(sector);
+    unsigned char tweak[16];
+    quint64 sector = firstSector;
+    for (qint64 at = 0; at < data.size(); at += sectorSize, ++sector) {
+        quint64 value = sector;
         for (int i = 15; i >= 0; --i) {
-            tweak[i] = char(value & 0xFF);
+            tweak[i] = uchar(value & 0xFF);
             value >>= 8;
         }
-        if (!run(EVP_aes_128_xts(), key, QByteArrayView(tweak, 16), encrypt, data.data() + at, out.data() + at, sectorSize))
+        if (EVP_CipherInit_ex(ctx.get(), nullptr, nullptr, nullptr, tweak, -1) != 1
+            || !update(ctx.get(), data.data() + at, out.data() + at, sectorSize))
             return {};
     }
     return out;

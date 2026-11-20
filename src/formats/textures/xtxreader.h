@@ -4,12 +4,33 @@
 #include "textures/texturedecode.h"
 
 #include <optional>
+#include <vector>
+
+struct XtxTextureInfo
+{
+    qsizetype at = 0;
+    quint64 dataSize = 0;
+    quint32 width = 0, height = 0, depth = 0, target = 0, format = 0, mipCount = 0, sliceSize = 0;
+    quint32 blockHeightLog2 = 0, arrayLength = 0;
+};
+
+struct XtxTexture
+{
+    XtxTextureInfo info;
+    qsizetype start = 0;
+    qsizetype size = 0;
+};
+
+struct XtxLayout
+{
+    std::vector<XtxTexture> textures;
+    int infoBlocks = 0;
+};
 
 class XtxReader : public FormatReader
 {
 public:
     static constexpr qint64 kMaxFileSize = qint64{512} * 1024 * 1024;
-    static constexpr int kMaxSide = 16384;
     static constexpr int kMaxSlices = 64;
 
     QString name() const override { return QStringLiteral("Switch texture (XTX)"); }
@@ -26,3 +47,4 @@ public:
 };
 
 std::optional<PixelFormat> xtxPixelFormat(quint32 nvn);
+std::optional<XtxLayout> parseXtxLayout(const QByteArray &data, QString *error);

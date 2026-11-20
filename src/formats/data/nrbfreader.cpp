@@ -1,10 +1,10 @@
 #include "data/nrbfreader.h"
 
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "core/treetable.h"
 
 #include <QDateTime>
-#include <QFile>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -14,6 +14,7 @@
 #include <QTimeZone>
 #include <QtEndian>
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
@@ -303,7 +304,7 @@ private:
             break;
         }
         case 13: nulls = int(u8()) - 1; out = {}; break;
-        case 14: nulls = i32() - 1; out = {}; break;
+        case 14: nulls = std::max(i32(), 1) - 1; out = {}; break;
         case 15: {
             const qint32 id = i32(), length = i32();
             const quint8 p = u8();
@@ -559,18 +560,10 @@ int NrbfReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> NrbfReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 256 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> NrbfReader::readBytes(const QByteArray &data, const QString &, QString *error) const

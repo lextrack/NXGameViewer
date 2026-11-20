@@ -128,7 +128,7 @@ std::optional<QByteArray> readCompressedFile(QFile &file, QString *error)
 {
     if (file.size() > kMaxWholeFile) {
         if (error)
-            *error = QObject::tr("File is larger than 1 GB.");
+            *error = fileTooLargeMessage(kMaxWholeFile);
         return std::nullopt;
     }
     try {
@@ -140,9 +140,14 @@ std::optional<QByteArray> readCompressedFile(QFile &file, QString *error)
     }
 }
 
-bool isCompressedFile(QFile &file)
+std::optional<QByteArray> compressedFileBytes(const QString &path, bool *compressed, QString *error)
 {
-    return file.open(QIODevice::ReadOnly) && detectCompression(file.peek(4)) != Compression::None;
+    QFile file(path);
+    *compressed = file.open(QIODevice::ReadOnly) && detectCompression(file.peek(4)) != Compression::None;
+    if (!*compressed)
+        return std::nullopt;
+    loadZstdDictionariesNear(path);
+    return readCompressedFile(file, error);
 }
 
 QString tooLargeMessage(const ArchiveEntry &entry)
@@ -205,14 +210,9 @@ std::vector<const FormatReader *> FormatRegistry::candidates(const QString &file
 std::unique_ptr<Document> FormatRegistry::open(const QString &path, const FormatReader **usedReader,
                                                QString *error) const
 {
-    {
-        QFile file(path);
-        if (isCompressedFile(file)) {
-            loadZstdDictionariesNear(path);
-            const std::optional<QByteArray> bytes = readCompressedFile(file, error);
-            return bytes ? openBytes(*bytes, QFileInfo(path).fileName(), usedReader, error) : nullptr;
-        }
-    }
+    bool compressed = false;
+    if (const std::optional<QByteArray> bytes = compressedFileBytes(path, &compressed, error); compressed)
+        return bytes ? openBytes(*bytes, QFileInfo(path).fileName(), usedReader, error) : nullptr;
     QStringList errors;
     for (const FormatReader *reader : candidates(path)) {
         QString e;
@@ -280,11 +280,10 @@ std::unique_ptr<Document> FormatRegistry::openWith(const FormatReader &reader, c
 {
     if (!reader.readsBytes())
         return readWith(reader, path, error);
-    QFile file(path);
-    if (!isCompressedFile(file))
+    bool compressed = false;
+    const std::optional<QByteArray> bytes = compressedFileBytes(path, &compressed, error);
+    if (!compressed)
         return readWith(reader, path, error);
-    loadZstdDictionariesNear(path);
-    const std::optional<QByteArray> bytes = readCompressedFile(file, error);
     return bytes ? openBytesWith(reader, *bytes, QFileInfo(path).fileName(), error) : nullptr;
 }
 
@@ -321,7 +320,7 @@ std::unique_ptr<Document> FormatRegistry::openEntry(const Archive &archive, size
         errors << QStringLiteral("%1: %2").arg(reader->name(), e);
     }
     if (error)
-        *error = errors.isEmpty() ? tooLargeMessage(entry) : tooLargeMessage(entry) + u'\n' + errors.join(u'\n');
+        *error = (QStringList{tooLargeMessage(entry)} + errors).join(u'\n');
     return nullptr;
 }
 

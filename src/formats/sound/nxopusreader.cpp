@@ -1,7 +1,8 @@
 #include "sound/nxopusreader.h"
+#include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
-#include <QFile>
 #include <QObject>
 #include <QtEndian>
 
@@ -16,8 +17,6 @@ namespace {
 constexpr qsizetype kHeaderSize = 0x38;
 constexpr int kMaxPacketSamples = 5760;
 
-quint32 u32le(const QByteArray &d, qsizetype pos) { return qFromLittleEndian<quint32>(d.constData() + pos); }
-quint32 u32be(const QByteArray &d, qsizetype pos) { return qFromBigEndian<quint32>(d.constData() + pos); }
 
 struct Sound
 {
@@ -110,18 +109,10 @@ int NxOpusReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> NxOpusReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 256 MB.");
-        return nullptr;
-    }
-    return fromBytes(file.readAll(), error);
+    return fromBytes(*bytes, error);
 }
 
 std::unique_ptr<Document> NxOpusReader::fromBytes(const QByteArray &data, QString *error)
@@ -137,10 +128,10 @@ std::unique_ptr<Document> NxOpusReader::fromBytes(const QByteArray &data, QStrin
     auto sound = std::make_shared<Sound>();
     sound->data = data;
     sound->channels = uchar(data[5]);
-    sound->sampleRate = int(u32le(data, 0x08));
-    const quint32 start = u32le(data, 0x18), size = u32le(data, 0x1C);
-    sound->sampleCount = u32le(data, 0x20);
-    const quint32 loopStart = u32le(data, 0x30), loopEnd = u32le(data, 0x34);
+    sound->sampleRate = int(le32(data, 0x08));
+    const quint32 start = le32(data, 0x18), size = le32(data, 0x1C);
+    sound->sampleCount = le32(data, 0x20);
+    const quint32 loopStart = le32(data, 0x30), loopEnd = le32(data, 0x34);
 
     if (sound->channels < 1 || sound->channels > 2)
         return fail(QObject::tr("%1 channels: only mono and stereo sounds are supported.").arg(sound->channels));
@@ -153,7 +144,7 @@ std::unique_ptr<Document> NxOpusReader::fromBytes(const QByteArray &data, QStrin
     for (qint64 pos = start, end = qint64(start) + size; pos < end;) {
         if (pos + 8 > end)
             return fail(QObject::tr("Broken packet header at 0x%1.").arg(pos, 0, 16));
-        const quint32 packetSize = u32be(sound->data, pos);
+        const quint32 packetSize = be32(sound->data, pos);
         if (packetSize == 0 || packetSize > end - pos - 8)
             return fail(QObject::tr("Broken packet at 0x%1.").arg(pos, 0, 16));
         sound->packets.push_back(QByteArrayView(sound->data).sliced(pos + 8, packetSize));
@@ -192,18 +183,8 @@ int NintendoOpusReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> NintendoOpusReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
-        return nullptr;
-    }
-    if (file.size() > NxOpusReader::kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 256 MB.");
-        return nullptr;
-    }
-    return fromBytes(file.readAll(), error);
+    const std::optional<QByteArray> bytes = readWholeFile(path, NxOpusReader::kMaxFileSize, error);
+    return bytes ? fromBytes(*bytes, error) : nullptr;
 }
 
 std::unique_ptr<Document> NintendoOpusReader::fromBytes(const QByteArray &data, QString *error)
@@ -213,27 +194,27 @@ std::unique_ptr<Document> NintendoOpusReader::fromBytes(const QByteArray &data, 
             *error = message;
         return nullptr;
     };
-    if (data.size() < 0x20 || u32le(data, 0) != 0x80000001u)
+    if (data.size() < 0x20 || le32(data, 0) != 0x80000001u)
         return fail(QObject::tr("Not a Nintendo Opus sound (no 0x80000001 header)."));
     auto sound = std::make_shared<Sound>();
     sound->data = data;
     sound->channels = uchar(data[9]);
-    sound->sampleRate = int(u32le(data, 0x0C));
-    const quint32 start = u32le(data, 0x10);
+    sound->sampleRate = int(le32(data, 0x0C));
+    const quint32 start = le32(data, 0x10);
     sound->preSkip = qFromLittleEndian<quint16>(data.constData() + 0x1C);
     if (sound->channels < 1 || sound->channels > 2)
         return fail(QObject::tr("%1 channels: only mono and stereo sounds are supported.").arg(sound->channels));
     if (sound->sampleRate != 8000 && sound->sampleRate != 12000 && sound->sampleRate != 16000
         && sound->sampleRate != 24000 && sound->sampleRate != 48000)
         return fail(QObject::tr("Unexpected sample rate %1.").arg(sound->sampleRate));
-    if (qint64(start) + 8 > data.size() || u32le(data, start) != 0x80000004u)
+    if (qint64(start) + 8 > data.size() || le32(data, start) != 0x80000004u)
         return fail(QObject::tr("The sound data chunk is missing."));
-    const qint64 size = std::min<qint64>(u32le(data, start + 4), data.size() - start - 8);
+    const qint64 size = std::min<qint64>(le32(data, start + 4), data.size() - start - 8);
     qint64 samples = 0;
     for (qint64 pos = start + 8, end = start + 8 + size; pos < end;) {
         if (pos + 8 > end)
             return fail(QObject::tr("Broken packet header at 0x%1.").arg(pos, 0, 16));
-        const quint32 packetSize = u32be(sound->data, pos);
+        const quint32 packetSize = be32(sound->data, pos);
         if (packetSize == 0 || packetSize > end - pos - 8)
             return fail(QObject::tr("Broken packet at 0x%1.").arg(pos, 0, 16));
         const QByteArrayView packet = QByteArrayView(sound->data).sliced(pos + 8, packetSize);

@@ -5,9 +5,9 @@
 #include <QString>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 
 namespace {
 
@@ -15,10 +15,13 @@ constexpr int kMaxRows = 64;
 constexpr int kMaxColumns = 32;
 constexpr size_t kMaxEntries = 16;
 
-const std::array<const char *, 20> kNames = {
-    "fuzz.tbl",   "fuzz.json",   "fuzz.dat",  "fuzz.mdl",  "fuzz.bin",  "fuzz.txt",    "fuzz.bntx",
-    "fuzz.xtx",   "fuzz.bfres",  "fuzz.byml", "fuzz.msbt", "fuzz.bcsv", "fuzz.bwav",   "fuzz.bars",
-    "fuzz.opus",  "fuzz.sarc",   "fuzz.bundle", "fuzz.assets", "fuzz.acb", "fuzz.awb",
+const char *const kNames[] = {
+    "fuzz.tbl",   "fuzz.json",   "fuzz.dat",    "fuzz.mdl",    "fuzz.bin",   "fuzz.txt",    "fuzz.bntx",
+    "fuzz.xtx",   "fuzz.bfres",  "fuzz.byml",   "fuzz.msbt",   "fuzz.bcsv",  "fuzz.bwav",   "fuzz.bars",
+    "fuzz.opus",  "fuzz.sarc",   "fuzz.bundle", "fuzz.assets", "fuzz.acb",   "fuzz.awb",    "fuzz.dds",
+    "fuzz.wav",   "fuzz.usm",    "fuzz.rpf",    "fuzz.nsp",    "fuzz.xci",   "fuzz.strtbl", "fuzz.awc",
+    "fuzz.wtd",   "fuzz.wvd",    "fuzz.wft",    "fuzz.ainb",   "fuzz.evfl",  "fuzz.asb",    "fuzz.baev",
+    "fuzz.rstbl", "fuzz.hght",   "fuzz.zs",     "fuzz.csv",    "fuzz.bfttf",
 };
 
 void exercise(const Document &doc, int depth);
@@ -94,7 +97,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     static const FormatRegistry registry;
     const QByteArray bytes(reinterpret_cast<const char *>(data), qsizetype(size));
-    const QString name = QString::fromLatin1(kNames[size ? data[size - 1] % kNames.size() : 0]);
+    const QString name = QString::fromLatin1(kNames[size ? data[size - 1] % std::size(kNames) : 0]);
     for (const auto &reader : registry.readers()) {
         if (!reader->readsBytes())
             continue;

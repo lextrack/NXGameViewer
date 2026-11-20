@@ -1,17 +1,16 @@
 #include "data/asbreader.h"
 
+#include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
-#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMap>
 #include <QObject>
-#include <QtEndian>
 
 #include <array>
-#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -21,59 +20,11 @@ constexpr qsizetype kNodeSize = 0x24;
 constexpr qsizetype kOldHeaderSize = 0x6C;
 constexpr int kMaxItems = 1 << 20;
 
-struct Failure : std::runtime_error
-{
-    using std::runtime_error::runtime_error;
-};
-
-class Reader
+class Reader : public ByteReader
 {
 public:
-    explicit Reader(const QByteArray &data) : m_data(data) {}
-
-    void need(qint64 at, qint64 size) const
-    {
-        if (at < 0 || size < 0 || at > m_data.size() - size)
-            throw Failure(QObject::tr("An offset points outside the file.").toStdString());
-    }
-    quint16 u16(qint64 at) const
-    {
-        need(at, 2);
-        return qFromLittleEndian<quint16>(m_data.constData() + at);
-    }
-    quint32 u32(qint64 at) const
-    {
-        need(at, 4);
-        return qFromLittleEndian<quint32>(m_data.constData() + at);
-    }
-    int count(quint32 n) const
-    {
-        if (n > quint32(kMaxItems))
-            throw Failure(QObject::tr("The file lists an impossible number of items.").toStdString());
-        return int(n);
-    }
-    void setPool(qint64 at) { m_pool = at; }
-    QString str(quint32 offset) const
-    {
-        const qint64 at = m_pool + offset;
-        need(at, 1);
-        const char *p = m_data.constData() + at;
-        return QString::fromUtf8(p, qsizetype(qstrnlen(p, uint(m_data.size() - at))));
-    }
-    QString guid(qint64 at) const
-    {
-        need(at, 16);
-        return QStringLiteral("%1-%2-%3-%4-%5")
-            .arg(u32(at), 8, 16, QLatin1Char('0'))
-            .arg(u16(at + 4), 4, 16, QLatin1Char('0'))
-            .arg(u16(at + 6), 4, 16, QLatin1Char('0'))
-            .arg(u16(at + 8), 4, 16, QLatin1Char('0'))
-            .arg(QString::fromLatin1(m_data.mid(at + 10, 6).toHex()));
-    }
-
-private:
-    const QByteArray &m_data;
-    qint64 m_pool = 0;
+    using ByteReader::ByteReader;
+    int count(quint32 n) const { return ByteReader::count(n, kMaxItems); }
 };
 
 QString nodeTypeName(int type)
@@ -103,18 +54,10 @@ int AsbReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> AsbReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return nullptr;
-    }
-    return readBytes(file.readAll(), path, error);
+    return readBytes(*bytes, path, error);
 }
 
 std::unique_ptr<Document> AsbReader::readBytes(const QByteArray &data, const QString &, QString *error) const
@@ -126,7 +69,7 @@ std::unique_ptr<Document> AsbReader::readBytes(const QByteArray &data, const QSt
     try {
         Reader r(data);
         if (data.size() < kOldHeaderSize || !data.startsWith("ASB "))
-            throw Failure(QObject::tr("Not an animation sequence (no \"ASB \" at the start).").toStdString());
+            throw ParseFailure(QObject::tr("Not an animation sequence (no \"ASB \" at the start).").toStdString());
         version = r.u32(4);
         int commandCount = 0, nodeCount = 0;
         qint64 commands = 0, nodes = 0;
@@ -193,7 +136,7 @@ std::unique_ptr<Document> AsbReader::readBytes(const QByteArray &data, const QSt
             animationRows.push_back({it.key(), it.value()});
             animationJson.append(QJsonObject{{"name", it.key()}, {"nodes", it.value()}});
         }
-    } catch (const Failure &f) {
+    } catch (const ParseFailure &f) {
         if (error)
             *error = QString::fromStdString(f.what());
         return nullptr;

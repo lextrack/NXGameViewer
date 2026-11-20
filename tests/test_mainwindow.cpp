@@ -614,6 +614,59 @@ private slots:
         QSettings().remove("switch");
     }
 
+    void extractDialogVerifiesTheSelectedGame()
+    {
+        QSettings().remove("switch");
+        QTemporaryDir dir;
+        const QString keys = switchsamples::writeFile(dir, "prod.keys", switchsamples::keysText());
+        const QByteArray package = switchsamples::partition(switchsamples::packageFiles());
+        const QString game = switchsamples::writeFile(dir, "game.nsp", package);
+
+        auto verify = [&](const QString &path) {
+            GameExtractDialog dialog(nullptr, KeySearchPlaces{});
+            QString error;
+            if (!dialog.setKeyFile(keys, &error))
+                return QStringLiteral("keys: ") + error;
+            dialog.addPackages({path});
+            if (!QTest::qWaitFor([&] { return !dialog.isScanning(); }, 10000))
+                return QStringLiteral("scan did not finish");
+            auto *list = dialog.findChild<QTreeWidget *>();
+            if (!list || list->topLevelItemCount() == 0)
+                return QStringLiteral("no game listed");
+            list->setCurrentItem(list->topLevelItem(0));
+            QPushButton *button = nullptr;
+            for (QPushButton *b : dialog.findChildren<QPushButton *>())
+                if (b->text() == "Verify")
+                    button = b;
+            if (!button || !button->isEnabled())
+                return QStringLiteral("verify button missing or disabled");
+            QString shown;
+            QTimer poll;
+            poll.setInterval(20);
+            connect(&poll, &QTimer::timeout, this, [&] {
+                if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                    shown = box->text();
+                    box->accept();
+                }
+            });
+            poll.start();
+            button->click();
+            QTest::qWaitFor([&] { return !shown.isEmpty(); }, 20000);
+            poll.stop();
+            return shown;
+        };
+
+        const QString intact = verify(game);
+        QVERIFY2(intact.contains("intact"), qPrintable(intact));
+
+        std::vector<std::pair<QByteArray, QByteArray>> files = switchsamples::packageFiles();
+        QByteArray &program = files.front().second;
+        program[program.size() - 0x300] = char(program[program.size() - 0x300] ^ 0x55);
+        const QString broken = verify(switchsamples::writeFile(dir, "broken.nsp", switchsamples::partition(files)));
+        QVERIFY2(broken.contains("damaged"), qPrintable(broken));
+        QSettings().remove("switch");
+    }
+
     void extractDialogReadsNupWithoutKeys()
     {
         QSettings().remove("switch");

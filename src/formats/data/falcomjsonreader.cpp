@@ -1,7 +1,7 @@
 #include "data/falcomjsonreader.h"
+#include "core/storedreader.h"
 #include "core/treetable.h"
 
-#include <QFile>
 #include <QObject>
 #include <QtEndian>
 
@@ -253,18 +253,10 @@ int FalcomJsonReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> FalcomJsonReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 256 MB.");
-        return nullptr;
-    }
-    return fromBytes(file.readAll(), error);
+    return fromBytes(*bytes, error);
 }
 
 std::unique_ptr<Document> FalcomJsonReader::fromBytes(const QByteArray &data, QString *error,

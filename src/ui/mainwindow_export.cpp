@@ -198,7 +198,7 @@ void MainWindow::showExtractSummary(const ExtractReport &report, const QString &
         lines << tr("%n file(s) already existed and were left as they were.", nullptr, int(kept));
     if (failed > 0)
         lines << tr("%n file(s) could not be extracted.", nullptr, int(failed));
-    const QString savedIn = written.isEmpty() ? folder : commonFolderOf(written);
+    const QString savedIn = written.isEmpty() ? folder : commonParentFolder(written);
     if (!written.isEmpty())
         lines << QString() << tr("Saved in %1").arg(QDir::toNativeSeparators(savedIn));
     m_info->setText(written.isEmpty() ? lines.first()

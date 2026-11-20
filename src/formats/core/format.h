@@ -156,6 +156,14 @@ struct Document
 {
     std::vector<std::shared_ptr<const Table>> tables;
     QString container;
+
+    std::shared_ptr<const Archive> archive() const
+    {
+        for (const auto &t : tables)
+            if (auto a = t->archive())
+                return a;
+        return nullptr;
+    }
 };
 
 class FormatReader

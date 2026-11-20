@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QByteArray>
 #include <QString>
 
 #include <functional>
@@ -18,7 +17,6 @@ public:
     ZipWriter &operator=(const ZipWriter &) = delete;
 
     bool addFile(const QString &name, QIODevice *source, const std::function<bool()> &keepGoing = {});
-    bool addBytes(const QString &name, const QByteArray &data);
     bool finish();
     QString error() const;
 

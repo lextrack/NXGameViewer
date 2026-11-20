@@ -628,6 +628,9 @@ private slots:
         QCOMPARE(sanitizedRelativePath("..\\..\\evil.txt"), QString("evil.txt"));
         QCOMPARE(sanitizedRelativePath("/abs/./a/../b"), QString("abs/a/b"));
         QCOMPARE(sanitizedRelativePath("a/b.bin"), QString("a/b.bin"));
+        QCOMPARE(safeFileName(".."), QString("__"));
+        QCOMPARE(safeFileName(" . "), QString("_"));
+        QCOMPARE(safeFileName("a..b"), QString("a..b"));
     }
 };
 

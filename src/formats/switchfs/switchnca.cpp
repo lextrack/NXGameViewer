@@ -1,4 +1,5 @@
 #include "switchfs/switchnca.h"
+#include "core/bytes.h"
 #include "unity/lz4block.h"
 
 #include "core/crypto.h"
@@ -10,7 +11,6 @@
 #include <QMutex>
 #include <QObject>
 #include <QSet>
-#include <QtEndian>
 
 #include <algorithm>
 #include <cstring>
@@ -21,16 +21,6 @@ constexpr quint32 kMaxPartitionFiles = 1 << 16;
 constexpr qint64 kMaxPartitionHeader = qint64{64} * 1024 * 1024;
 constexpr qint64 kMaxRomfsTable = qint64{512} * 1024 * 1024;
 constexpr quint32 kNone = 0xFFFFFFFFu;
-
-quint32 u32(const QByteArray &b, qsizetype at)
-{
-    return qFromLittleEndian<quint32>(b.constData() + at);
-}
-
-quint64 u64(const QByteArray &b, qsizetype at)
-{
-    return qFromLittleEndian<quint64>(b.constData() + at);
-}
 
 class FileStorage : public SwitchStorage
 {
@@ -262,8 +252,8 @@ StoragePtr compressedStorage(const StoragePtr &section, const QByteArray &info, 
     constexpr qint64 kEntriesPerNode = (kNode - 0x10) / kEntrySize;
     constexpr qint64 kOffsetsPerNode = (kNode - 0x10) / 8;
     constexpr qint64 kMaxBlock = qint64{16} * 1024 * 1024;
-    const qint64 tableAt = qint64(u64(info, 0)), tableSize = qint64(u64(info, 8));
-    const qint64 count = qint32(u32(info, 0x18));
+    const qint64 tableAt = qint64(le64(info, 0)), tableSize = qint64(le64(info, 8));
+    const qint64 count = qint32(le32(info, 0x18));
     const qint64 sets = (count + kEntriesPerNode - 1) / kEntriesPerNode;
     if (info.mid(0x10, 4) != "BKTR")
         return fail(damaged);
@@ -272,23 +262,23 @@ StoragePtr compressedStorage(const StoragePtr &section, const QByteArray &info, 
     if (sets > kOffsetsPerNode)
         return fail(QObject::tr("This game's compressed data uses a table layout the app cannot read yet."));
     const QByteArray l1 = section->read(tableAt, kNode);
-    if (l1.size() != kNode || qint32(u32(l1, 4)) != sets)
+    if (l1.size() != kNode || qint32(le32(l1, 4)) != sets)
         return fail(damaged);
-    const qint64 virtualSize = qint64(u64(l1, 8));
+    const qint64 virtualSize = qint64(le64(l1, 8));
     std::vector<CompressedStorage::Entry> entries;
     entries.reserve(size_t(count));
     for (qint64 set = 0; set < sets; ++set) {
         const QByteArray node = section->read(tableAt + kNode * (1 + set), kNode);
-        const qint64 inNode = node.size() == kNode ? qint32(u32(node, 4)) : -1;
+        const qint64 inNode = node.size() == kNode ? qint32(le32(node, 4)) : -1;
         if (inNode <= 0 || inNode > kEntriesPerNode)
             return fail(damaged);
         for (qint64 e = 0; e < inNode; ++e) {
             const qsizetype at = qsizetype(0x10 + e * kEntrySize);
             CompressedStorage::Entry entry;
-            entry.virtualOffset = qint64(u64(node, at));
-            entry.physicalOffset = qint64(u64(node, at + 8));
+            entry.virtualOffset = qint64(le64(node, at));
+            entry.physicalOffset = qint64(le64(node, at + 8));
             entry.type = quint8(node[at + 16]);
-            entry.physicalSize = u32(node, at + 20);
+            entry.physicalSize = le32(node, at + 20);
             const bool known = entry.type == CompressedStorage::Stored || entry.type == CompressedStorage::Zeros
                             || entry.type == CompressedStorage::Lz4;
             if (!known)
@@ -336,8 +326,8 @@ std::optional<std::vector<PartitionEntry>> readPartition(const StoragePtr &stora
     const bool hfs = head.startsWith("HFS0");
     if (!hfs && !head.startsWith("PFS0"))
         return fail(QObject::tr("Not a PFS0 or HFS0 partition."));
-    const quint32 count = u32(head, 4);
-    const quint32 strings = u32(head, 8);
+    const quint32 count = le32(head, 4);
+    const quint32 strings = le32(head, 8);
     const qint64 entrySize = hfs ? 0x40 : 0x18;
     const qint64 headerSize = 16 + qint64(count) * entrySize + strings;
     if (count > kMaxPartitionFiles || headerSize > kMaxPartitionHeader || headerSize > storage->size())
@@ -349,8 +339,8 @@ std::optional<std::vector<PartitionEntry>> readPartition(const StoragePtr &stora
     std::vector<PartitionEntry> out;
     for (quint32 i = 0; i < count; ++i) {
         const qint64 at = 16 + qint64(i) * entrySize;
-        const quint64 offset = u64(header, at), size = u64(header, at + 8);
-        const quint32 nameAt = u32(header, at + 16);
+        const quint64 offset = le64(header, at), size = le64(header, at + 8);
+        const quint32 nameAt = le32(header, at + 16);
         if (nameAt >= strings)
             return fail(QObject::tr("The partition header is damaged."));
         const qsizetype end = header.indexOf('\0', stringsAt + nameAt);
@@ -377,11 +367,11 @@ std::optional<std::vector<RomfsFile>> listRomfs(const StoragePtr &romfs, QString
     if (!romfs || romfs->size() < 0x50)
         return fail(QObject::tr("The RomFS is cut off."));
     const QByteArray header = romfs->read(0, 0x50);
-    if (header.size() != 0x50 || u64(header, 0) != 0x50)
+    if (header.size() != 0x50 || le64(header, 0) != 0x50)
         return fail(QObject::tr("The RomFS header is damaged (are the keys right?)."));
-    const quint64 dirsAt = u64(header, 0x18), dirsSize = u64(header, 0x20);
-    const quint64 filesAt = u64(header, 0x38), filesSize = u64(header, 0x40);
-    const quint64 dataAt = u64(header, 0x48);
+    const quint64 dirsAt = le64(header, 0x18), dirsSize = le64(header, 0x20);
+    const quint64 filesAt = le64(header, 0x38), filesSize = le64(header, 0x40);
+    const quint64 dataAt = le64(header, 0x48);
     const quint64 total = quint64(romfs->size());
     if (dirsSize > quint64(kMaxRomfsTable) || filesSize > quint64(kMaxRomfsTable) || dirsAt > total - dirsSize
         || filesAt > total - filesSize || dataAt > total)
@@ -394,7 +384,7 @@ std::optional<std::vector<RomfsFile>> listRomfs(const StoragePtr &romfs, QString
     auto name = [](const QByteArray &table, quint32 at, int fixed) -> std::optional<QString> {
         if (qint64(at) + fixed > table.size())
             return std::nullopt;
-        const quint32 length = u32(table, at + fixed - 4);
+        const quint32 length = le32(table, at + fixed - 4);
         if (qint64(at) + fixed + length > table.size())
             return std::nullopt;
         return QString::fromUtf8(table.constData() + at + fixed, length);
@@ -410,12 +400,12 @@ std::optional<std::vector<RomfsFile>> listRomfs(const StoragePtr &romfs, QString
         if (seenDirs.contains(p.dir) || qint64(p.dir) + 0x18 > dirs.size())
             return fail(QObject::tr("The RomFS directory table is damaged."));
         seenDirs.insert(p.dir);
-        for (quint32 f = u32(dirs, p.dir + 12); f != kNone; f = u32(files, f + 4)) {
+        for (quint32 f = le32(dirs, p.dir + 12); f != kNone; f = le32(files, f + 4)) {
             const std::optional<QString> fileName = name(files, f, 0x20);
             if (!fileName || seenFiles.contains(f))
                 return fail(QObject::tr("The RomFS file table is damaged."));
             seenFiles.insert(f);
-            const quint64 offset = u64(files, f + 8), size = u64(files, f + 16);
+            const quint64 offset = le64(files, f + 8), size = le64(files, f + 16);
             if (offset > total - dataAt || size > total - dataAt - offset)
                 return fail(QObject::tr("A RomFS file points outside the RomFS."));
             const QString path = p.prefix + *fileName;
@@ -423,12 +413,12 @@ std::optional<std::vector<RomfsFile>> listRomfs(const StoragePtr &romfs, QString
                 return fail(QObject::tr("The RomFS has a file with an unsafe name: %1").arg(path));
             out.push_back({path, qint64(dataAt + offset), qint64(size)});
         }
-        for (quint32 d = u32(dirs, p.dir + 8); d != kNone;) {
+        for (quint32 d = le32(dirs, p.dir + 8); d != kNone;) {
             const std::optional<QString> dirName = name(dirs, d, 0x18);
             if (!dirName)
                 return fail(QObject::tr("The RomFS directory table is damaged."));
             stack.push_back({d, p.prefix + *dirName + u'/'});
-            d = u32(dirs, d + 4);
+            d = le32(dirs, d + 4);
             if (stack.size() > size_t(kMaxPartitionFiles) * 16)
                 return fail(QObject::tr("The RomFS directory table is damaged."));
         }
@@ -468,7 +458,7 @@ std::optional<SwitchNca> SwitchNca::open(const StoragePtr &storage, const Switch
         nca.m_header = header;
     }
     const QByteArray &h = nca.m_header;
-    nca.m_titleId = u64(h, 0x210);
+    nca.m_titleId = le64(h, 0x210);
     int generation = std::max(int(uchar(h[0x206])), int(uchar(h[0x220])));
     if (generation > 0)
         --generation;
@@ -503,7 +493,7 @@ bool SwitchNca::hasSection(int section) const
 {
     if (section < 0 || section > 3)
         return false;
-    return u32(m_header, 0x240 + 0x10 * section) != 0;
+    return le32(m_header, 0x240 + 0x10 * section) != 0;
 }
 
 bool SwitchNca::isPatchSection(int section) const
@@ -531,8 +521,8 @@ StoragePtr SwitchNca::sectionData(int section, QString *error) const
     };
     if (!hasSection(section))
         return fail(QObject::tr("The NCA has no section %1.").arg(section));
-    const qint64 start = qint64(u32(m_header, 0x240 + 0x10 * section)) * 0x200;
-    const qint64 end = qint64(u32(m_header, 0x244 + 0x10 * section)) * 0x200;
+    const qint64 start = qint64(le32(m_header, 0x240 + 0x10 * section)) * 0x200;
+    const qint64 end = qint64(le32(m_header, 0x244 + 0x10 * section)) * 0x200;
     if (end <= start || end > m_storage->size())
         return fail(QObject::tr("The NCA section points outside the file."));
     const QByteArray fs = fsHeader(section);
@@ -559,7 +549,7 @@ StoragePtr SwitchNca::partition(int section, QString *error) const
     if (!data)
         return nullptr;
     const QByteArray fs = fsHeader(section);
-    const qint64 offset = qint64(u64(fs, 8 + 0x38)), size = qint64(u64(fs, 8 + 0x40));
+    const qint64 offset = qint64(le64(fs, 8 + 0x38)), size = qint64(le64(fs, 8 + 0x40));
     StoragePtr out = subStorage(data, offset, size);
     if (!out && error)
         *error = QObject::tr("The NCA partition points outside its section.");
@@ -577,14 +567,14 @@ StoragePtr SwitchNca::romfs(int section, QString *error) const
             *error = QObject::tr("The RomFS section has no IVFC header.");
         return nullptr;
     }
-    const qint64 offset = qint64(u64(fs, 8 + 0x10 + 5 * 0x18)), size = qint64(u64(fs, 8 + 0x18 + 5 * 0x18));
+    const qint64 offset = qint64(le64(fs, 8 + 0x10 + 5 * 0x18)), size = qint64(le64(fs, 8 + 0x18 + 5 * 0x18));
     StoragePtr out = subStorage(data, offset, size);
     if (!out) {
         if (error)
             *error = QObject::tr("The RomFS points outside its section.");
         return nullptr;
     }
-    if (u64(fs, 0x178) != 0 && u64(fs, 0x180) != 0)
+    if (le64(fs, 0x178) != 0 && le64(fs, 0x180) != 0)
         return compressedStorage(out, fs.mid(0x178, 0x28), error);
     return out;
 }
@@ -604,9 +594,9 @@ bool SwitchNca::verifyRomfs(int section, const std::function<bool(qint64 done, q
     if (fs.mid(8, 4) != "IVFC")
         return fail(QObject::tr("The RomFS section has no IVFC header."));
     const qsizetype level4 = 8 + 0x10 + 4 * 0x18, level5 = 8 + 0x10 + 5 * 0x18;
-    const qint64 hashesAt = qint64(u64(fs, level4)), hashesSize = qint64(u64(fs, level4 + 8));
-    const qint64 dataAt = qint64(u64(fs, level5)), dataSize = qint64(u64(fs, level5 + 8));
-    const quint32 shift = u32(fs, level5 + 16);
+    const qint64 hashesAt = qint64(le64(fs, level4)), hashesSize = qint64(le64(fs, level4 + 8));
+    const qint64 dataAt = qint64(le64(fs, level5)), dataSize = qint64(le64(fs, level5 + 8));
+    const quint32 shift = le32(fs, level5 + 16);
     if (shift < 9 || shift > 24)
         return fail(QObject::tr("The RomFS hash tree is damaged."));
     const qint64 block = qint64(1) << shift;

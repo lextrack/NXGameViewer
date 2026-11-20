@@ -1,8 +1,9 @@
 #include "sound/wavreader.h"
 
+#include "core/bytes.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 
-#include <QFile>
 #include <QLocale>
 #include <QObject>
 #include <QtEndian>
@@ -16,16 +17,6 @@ constexpr int kMaxChannels = 32;
 constexpr quint16 kPcm = 1;
 constexpr quint16 kFloat = 3;
 constexpr quint16 kExtensible = 0xFFFE;
-
-quint16 le16(QByteArrayView d, qsizetype at)
-{
-    return qFromLittleEndian<quint16>(d.data() + at);
-}
-
-quint32 le32(QByteArrayView d, qsizetype at)
-{
-    return qFromLittleEndian<quint32>(d.data() + at);
-}
 
 qint16 sampleAt(const char *p, quint16 format, int bits)
 {
@@ -138,18 +129,10 @@ int WavReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> WavReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 512 MB.");
-        return nullptr;
-    }
-    return parse(file.readAll(), error);
+    return parse(*bytes, error);
 }
 
 std::unique_ptr<Document> WavReader::readBytes(const QByteArray &data, const QString &, QString *error) const

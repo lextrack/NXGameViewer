@@ -67,6 +67,10 @@ std::optional<QByteArray> decompressYaz0(const QByteArray &data, QString *error)
     const quint32 size = qFromBigEndian<quint32>(data.constData() + 4);
     if (qint64(size) > kMaxDecompressed)
         return fail(error, QObject::tr("The file decompresses to more than 1 GB."));
+    constexpr qint64 kMaxGroupInput = 1 + 8 * 3;
+    constexpr qint64 kMaxGroupOutput = 8 * (0xFF + 0x12);
+    if (qint64(size) > (qint64(data.size()) - 16 + kMaxGroupInput - 1) / kMaxGroupInput * kMaxGroupOutput)
+        return fail(error, QObject::tr("The Yaz0 data ends too early."));
     QByteArray out(qsizetype(size), Qt::Uninitialized);
     const auto *src = reinterpret_cast<const uchar *>(data.constData());
     auto *dst = reinterpret_cast<uchar *>(out.data());

@@ -1,55 +1,18 @@
 #include "unity/unitybundle.h"
 
+#include "core/bytes.h"
 #include "unity/lz4block.h"
 
 #include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QObject>
-#include <QtEndian>
 
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
 namespace {
-
-class Cursor
-{
-public:
-    explicit Cursor(QByteArrayView data) : m_data(data) {}
-
-    qsizetype pos() const { return m_pos; }
-    void seek(qsizetype pos)
-    {
-        if (pos < 0 || pos > m_data.size())
-            throw std::runtime_error("seek");
-        m_pos = pos;
-    }
-    void align(qsizetype to) { seek((m_pos + to - 1) / to * to); }
-    QByteArrayView take(qsizetype n)
-    {
-        if (n < 0 || n > m_data.size() - m_pos)
-            throw std::runtime_error("short");
-        const QByteArrayView out = m_data.sliced(m_pos, n);
-        m_pos += n;
-        return out;
-    }
-    template <typename T> T be() { return qFromBigEndian<T>(take(sizeof(T)).data()); }
-    QString cstring()
-    {
-        const qsizetype end = m_data.indexOf('\0', m_pos);
-        if (end < 0)
-            throw std::runtime_error("string");
-        const QString out = QString::fromUtf8(m_data.sliced(m_pos, end - m_pos));
-        m_pos = end + 1;
-        return out;
-    }
-
-private:
-    QByteArrayView m_data;
-    qsizetype m_pos = 0;
-};
 
 std::optional<QByteArray> unpack(QByteArrayView data, quint32 compression, qsizetype size, QString *error)
 {
@@ -100,7 +63,7 @@ std::optional<UnityBundle> parseBundle(UnityBundle::StoredReader readAt, qint64 
     };
     try {
         const QByteArray head = readAt(0, std::min(fileSize, kHeadSize));
-        Cursor in(head);
+        ByteCursor in(head);
         if (in.cstring() != QLatin1String("UnityFS"))
             return fail(QObject::tr("Not a Unity bundle (no \"UnityFS\" at the start)."));
         UnityBundle bundle;
@@ -131,7 +94,7 @@ std::optional<UnityBundle> parseBundle(UnityBundle::StoredReader readAt, qint64 
         if (flags & 0x200)
             dataAt = (dataAt + 15) / 16 * 16;
 
-        Cursor list(*info);
+        ByteCursor list(*info);
         list.take(16);
         const qint32 blockCount = list.be<qint32>();
         if (blockCount < 0 || blockCount > 1'000'000)

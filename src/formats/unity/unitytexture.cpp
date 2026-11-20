@@ -140,7 +140,7 @@ std::optional<Image> decodeUnityTexture(const UValue &texture, QByteArrayView im
         return fail(QObject::tr("The texture has no size or format."));
     const int width = int(w->toInt()), height = int(h->toInt());
     int format = int(f->toInt());
-    if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
+    if (width <= 0 || height <= 0 || width > kMaxTextureSide || height > kMaxTextureSide)
         return fail(QObject::tr("The texture size %1×%2 is not valid.").arg(width).arg(height));
     if (imageData.isEmpty())
         return fail(QObject::tr("The texture's pixels are stored in another file that is not available here."));

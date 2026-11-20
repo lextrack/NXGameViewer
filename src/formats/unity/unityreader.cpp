@@ -2,6 +2,7 @@
 
 #include "core/contentkind.h"
 #include "core/simpletable.h"
+#include "core/storedreader.h"
 #include "core/treetable.h"
 #include "models/gltfwriter.h"
 #include "models/meshpreview.h"
@@ -969,7 +970,7 @@ std::unique_ptr<Document> UnityBundleReader::read(const QString &path, QString *
     }
     if (file.size() > kMaxFileSize) {
         if (error)
-            *error = QObject::tr("File is larger than 2 GB.");
+            *error = fileTooLargeMessage(kMaxFileSize);
         return nullptr;
     }
     file.close();
@@ -992,7 +993,7 @@ std::unique_ptr<Document> UnityBundleReader::readStored(const StoredReader &read
 {
     if (size > kMaxFileSize) {
         if (error)
-            *error = QObject::tr("File is larger than 2 GB.");
+            *error = fileTooLargeMessage(kMaxFileSize);
         return nullptr;
     }
     std::optional<UnityBundle> bundle = readUnityBundleStored(read, size, error);
@@ -1008,22 +1009,14 @@ int UnityAssetsReader::score(const QString &, QByteArrayView head) const
 
 std::unique_ptr<Document> UnityAssetsReader::read(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
+    const std::optional<QByteArray> bytes = readWholeFile(path, kMaxFileSize, error);
+    if (!bytes)
         return nullptr;
-    }
-    if (file.size() > kMaxFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 2 GB.");
-        return nullptr;
-    }
     const QString folder = QFileInfo(path).absolutePath();
     const ResourceLoader loader = [folder](const QString &resource, qint64 offset, qint64 size) {
         return readFileSlice(QDir(folder).filePath(resource.section(u'/', -1)), offset, size);
     };
-    return readAssets(file.readAll(), path, loader, error);
+    return readAssets(*bytes, path, loader, error);
 }
 
 std::unique_ptr<Document> UnityAssetsReader::readBytes(const QByteArray &data, const QString &fileName, QString *error) const

@@ -1,5 +1,6 @@
 #include "models/animationsearch.h"
 
+#include "core/storedreader.h"
 #include "models/bfresreader.h"
 #include "archives/decompress.h"
 #include "models/falcommdlreader.h"
@@ -20,18 +21,7 @@ constexpr int kMaxCandidates = 256;
 
 QByteArray readSmallFile(const QString &path, QString *error)
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = file.errorString();
-        return {};
-    }
-    if (file.size() > kMaxAnimationFileSize) {
-        if (error)
-            *error = QObject::tr("File is larger than 64 MB.");
-        return {};
-    }
-    return file.readAll();
+    return readWholeFile(path, kMaxAnimationFileSize, error).value_or(QByteArray());
 }
 
 struct Unpacked
