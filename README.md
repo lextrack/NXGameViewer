@@ -102,23 +102,9 @@ If MSYS2 is installed somewhere else, set `MSYS2_ROOT` to its folder before runn
 From the MSYS2 UCRT64 window you can also run `bash packaging/windows/build-windows.sh`, adding
 `--install-deps` the first time so it installs the packages.
 
-### Automatic builds (GitHub Actions)
-
-[`.github/workflows/build.yml`](.github/workflows/build.yml) runs the same two scripts on every
-push to `main` and every pull request, so a build that works locally works there too.
-
-The builds can be downloaded from the run's **Artifacts** section. To publish a release, push
-a version tag; the workflow builds both and attaches them to a new GitHub release:
-
-```sh
-git tag v0.2
-git push origin v0.2
-```
-
 ## Legal
 
-NX Game Viewer contains no game data, keys or copyrighted assets. Use it only with games you own
-and keys dumped from your own console.
+NX Game Viewer contains no game data, keys or copyrighted assets. Use it only with games you own and keys dumped from your own console.
 
 MIT licence; see [LICENSE](LICENSE). Third-party code and credits are listed in
 [THIRD_PARTY.md](THIRD_PARTY.md).
