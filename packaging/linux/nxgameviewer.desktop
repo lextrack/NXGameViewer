@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NX Game Viewer
+Comment=Browse, view and export the files of Switch games
+Exec=NXGameViewer %f
+Icon=nxgameviewer
+Categories=Utility;Development;
+Terminal=false

@@ -41,7 +41,7 @@ void addFolder(QStringList &list, const QString &path)
     if (path.isEmpty() || !QFileInfo(path).isDir())
         return;
     const QString c = clean(QFileInfo(path).absoluteFilePath());
-    if (!list.contains(c))
+    if (!list.contains(c, pathCaseSensitivity()))
         list << c;
 }
 
@@ -217,7 +217,7 @@ std::vector<ModRecord> findInstalledMods(const QStringList &dataFolders)
     QStringList seen;
     auto add = [&](const QString &romfs) {
         const QString c = clean(romfs);
-        if (seen.contains(c))
+        if (seen.contains(c, pathCaseSensitivity()))
             return;
         seen << c;
         out.push_back(modRecord(c));

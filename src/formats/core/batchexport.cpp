@@ -87,9 +87,10 @@ public:
     {
         if (!mayWrite(path))
             return false;
+        if (!makeFolderFor(path))
+            return false;
         QSaveFile out(path);
-        if (!QDir().mkpath(QFileInfo(path).absolutePath()) || !out.open(QIODevice::WriteOnly) || out.write(data) < 0
-            || !out.commit()) {
+        if (!out.open(QIODevice::WriteOnly) || out.write(data) < 0 || !out.commit()) {
             addError(m_result, QStringLiteral("%1: %2").arg(QFileInfo(path).fileName(), out.errorString()));
             return false;
         }
@@ -101,8 +102,10 @@ public:
     {
         if (!mayWrite(path))
             return false;
+        if (!makeFolderFor(path))
+            return false;
         QSaveFile out(path);
-        bool ok = QDir().mkpath(QFileInfo(path).absolutePath()) && out.open(QIODevice::WriteOnly);
+        bool ok = out.open(QIODevice::WriteOnly);
         for (qint64 at = 0; ok && at < size; at += kCopyChunk) {
             if (stop && stop->load())
                 return false;
@@ -120,6 +123,17 @@ public:
     }
 
 private:
+    bool makeFolderFor(const QString &path)
+    {
+        static std::mutex mutex;
+        const QString folder = QFileInfo(path).absolutePath();
+        const std::lock_guard lock(mutex);
+        if (QDir().mkpath(folder) || QFileInfo(folder).isDir())
+            return true;
+        addError(m_result, QObject::tr("cannot create the folder %1").arg(QDir::toNativeSeparators(folder)));
+        return false;
+    }
+
     const BatchOptions &m_options;
     BatchFileResult &m_result;
     QString m_original;
@@ -285,7 +299,9 @@ QString commonParentFolder(const QStringList &paths)
         common = common.first(n);
     }
     const QString joined = common.join(u'/');
-    return joined.isEmpty() && folders.first().startsWith(u'/') ? QStringLiteral("/") : joined;
+    if (joined.isEmpty())
+        return folders.first().startsWith(u'/') ? QStringLiteral("/") : QString();
+    return common.size() == 1 && joined.endsWith(u':') ? joined + u'/' : joined;
 }
 
 QStringList batchOutputBases(const QStringList &files, const BatchOptions &options)

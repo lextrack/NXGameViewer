@@ -190,6 +190,9 @@ endif()
 # The desktop app
 qt_add_executable(NXGameViewer src/main.cpp)
 target_link_libraries(NXGameViewer PRIVATE viewerui nxgv_warnings)
+set_target_properties(NXGameViewer PROPERTIES WIN32_EXECUTABLE TRUE)
+include(GNUInstallDirs)
+install(TARGETS NXGameViewer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Tests
 enable_testing()

@@ -61,12 +61,28 @@
 #include <QTest>
 #include <QUrl>
 
+#include <type_traits>
+
+namespace {
+
+auto dragPoint(QPoint point)
+{
+    if constexpr (std::is_constructible_v<QDragEnterEvent, QPointF, Qt::DropActions, const QMimeData *,
+                                          Qt::MouseButtons, Qt::KeyboardModifiers>)
+        return QPointF(point);
+    else
+        return point;
+}
+
+}
+
 class TestMainWindow : public QObject
 {
     Q_OBJECT
 
 private:
     QTemporaryDir m_dir;
+    QTemporaryDir m_settings;
 
     // Sends the same events a real drag from the file manager would.
     bool drop(MainWindow &w, const QString &path)
@@ -75,7 +91,7 @@ private:
         mime.setUrls({QUrl::fromLocalFile(path)});
         const QPoint pos = w.rect().center();
 
-        QDragEnterEvent enter(QPointF(pos), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QDragEnterEvent enter(dragPoint(pos), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
         QCoreApplication::sendEvent(&w, &enter);
         if (!enter.isAccepted())
             return false;
@@ -117,9 +133,9 @@ private:
 private slots:
     void initTestCase()
     {
-        QStandardPaths::setTestModeEnabled(true);  // don't touch the real app settings
-        QSettings().remove("batchExport");
-        QSettings().remove("extract");
+        QStandardPaths::setTestModeEnabled(true);
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settings.path());
         QFile f(m_dir.filePath("items.tbl"));
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write(sample::makeSample());
@@ -651,9 +667,9 @@ private slots:
             });
             poll.start();
             button->click();
-            QTest::qWaitFor([&] { return !shown.isEmpty(); }, 20000);
+            const bool answered = QTest::qWaitFor([&] { return !shown.isEmpty(); }, 20000);
             poll.stop();
-            return shown;
+            return answered ? shown : QStringLiteral("no message appeared");
         };
 
         const QString intact = verify(game);
@@ -759,7 +775,7 @@ private slots:
         MainWindow w;
         QMimeData mime;
         mime.setText("just some text");
-        QDragEnterEvent enter(QPointF(5, 5), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QDragEnterEvent enter(dragPoint(QPoint(5, 5)), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
         QCoreApplication::sendEvent(&w, &enter);
         QVERIFY(!enter.isAccepted());
     }

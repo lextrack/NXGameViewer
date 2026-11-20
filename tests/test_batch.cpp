@@ -25,6 +25,11 @@ QByteArray readFile(const QString &path)
     return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
 }
 
+QString at(const QString &path)
+{
+    return QDir::rootPath() + path;
+}
+
 QStringList writtenUnder(const ExtractReport &report, const QString &folder)
 {
     QStringList written;
@@ -55,37 +60,37 @@ private slots:
 
     void findsTheCommonParentOfASelection()
     {
-        QCOMPARE(commonParentFolder({"/g/a/x.tbl"}), QString("/g/a"));
-        QCOMPARE(commonParentFolder({"/g/a/x.tbl", "/g/a/y.tbl"}), QString("/g/a"));
-        QCOMPARE(commonParentFolder({"/g/a/x.tbl", "/g/b/c/y.tbl"}), QString("/g"));
-        QCOMPARE(commonParentFolder({"/g/a"}), QString("/g"));
-        QCOMPARE(commonParentFolder({"/a/x", "/b/y"}), QString("/"));
-        QCOMPARE(commonParentFolder({"/out/m/a.glb", "/out/m/a.csv"}), QString("/out/m"));
-        QCOMPARE(commonParentFolder({"/out/m/a.glb", "/out/n/b.png"}), QString("/out"));
+        QCOMPARE(commonParentFolder({at("g/a/x.tbl")}), at("g/a"));
+        QCOMPARE(commonParentFolder({at("g/a/x.tbl"), at("g/a/y.tbl")}), at("g/a"));
+        QCOMPARE(commonParentFolder({at("g/a/x.tbl"), at("g/b/c/y.tbl")}), at("g"));
+        QCOMPARE(commonParentFolder({at("g/a")}), at("g"));
+        QCOMPARE(commonParentFolder({at("a/x"), at("b/y")}), at(""));
+        QCOMPARE(commonParentFolder({at("out/m/a.glb"), at("out/m/a.csv")}), at("out/m"));
+        QCOMPARE(commonParentFolder({at("out/m/a.glb"), at("out/n/b.png")}), at("out"));
     }
 
     void singleFilesGoStraightIntoTheOutputFolder()
     {
         BatchOptions options;
-        options.outputFolder = "/out";
-        options.baseFolder = commonParentFolder({"/game/asset/model/hero.mdl"});
-        QCOMPARE(batchOutputBases({"/game/asset/model/hero.mdl"}, options), QStringList{"/out/hero"});
-        options.baseFolder = commonParentFolder({"/game/asset/model"});
-        QCOMPARE(batchOutputBases({"/game/asset/model/a/hero.mdl"}, options), QStringList{"/out/model/a/hero"});
+        options.outputFolder = at("out");
+        options.baseFolder = commonParentFolder({at("game/asset/model/hero.mdl")});
+        QCOMPARE(batchOutputBases({at("game/asset/model/hero.mdl")}, options), QStringList{at("out/hero")});
+        options.baseFolder = commonParentFolder({at("game/asset/model")});
+        QCOMPARE(batchOutputBases({at("game/asset/model/a/hero.mdl")}, options), QStringList{at("out/model/a/hero")});
     }
 
     void plansOutputNamesWithoutClashes()
     {
         BatchOptions options;
-        options.baseFolder = "/game";
-        options.outputFolder = "/out";
-        const QStringList files = {"/game/a/x.tbl", "/game/a/x.mdl", "/game/a/y.tbl", "/game/b/y.tbl", "/elsewhere/z.tbl"};
+        options.baseFolder = at("game");
+        options.outputFolder = at("out");
+        const QStringList files = {at("game/a/x.tbl"), at("game/a/x.mdl"), at("game/a/y.tbl"), at("game/b/y.tbl"), at("elsewhere/z.tbl")};
         QCOMPARE(batchOutputBases(files, options),
-                 (QStringList{"/out/a/x.tbl", "/out/a/x.mdl", "/out/a/y", "/out/b/y", "/out/z"}));
+                 (QStringList{at("out/a/x.tbl"), at("out/a/x.mdl"), at("out/a/y"), at("out/b/y"), at("out/z")}));
 
         options.keepFolders = false;
         QCOMPARE(batchOutputBases(files, options),
-                 (QStringList{"/out/x.tbl", "/out/x.mdl", "/out/y.tbl", "/out/y.tbl_2", "/out/z"}));
+                 (QStringList{at("out/x.tbl"), at("out/x.mdl"), at("out/y.tbl"), at("out/y.tbl_2"), at("out/z")}));
     }
 
     void exportsEachKindOfFile()

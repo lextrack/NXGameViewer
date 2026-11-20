@@ -13,6 +13,15 @@ bool isDriveLetter(const QString &part)
 
 }
 
+Qt::CaseSensitivity pathCaseSensitivity()
+{
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return Qt::CaseInsensitive;
+#else
+    return Qt::CaseSensitive;
+#endif
+}
+
 QString safeFileName(QString name)
 {
     static const QString forbidden = QStringLiteral("/\\:*?\"<>|");
