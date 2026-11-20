@@ -1,0 +1,28 @@
+#pragma once
+
+#include "core/format.h"
+
+#include <QJsonValue>
+
+#include <optional>
+
+struct BymlLimits
+{
+    int maxDepth = 128;
+    qsizetype maxValues = 4'000'000;
+};
+
+class BymlReader : public FormatReader
+{
+public:
+    static constexpr qint64 kMaxFileSize = qint64{256} * 1024 * 1024;
+
+    QString name() const override { return QStringLiteral("BYML data"); }
+    int score(const QString &fileName, QByteArrayView head) const override;
+    std::unique_ptr<Document> read(const QString &path, QString *error) const override;
+    bool readsBytes() const override { return true; }
+    std::unique_ptr<Document> readBytes(const QByteArray &data, const QString &fileName, QString *error) const override;
+
+    static bool isByml(QByteArrayView head);
+    static std::optional<QJsonValue> toJson(const QByteArray &data, QString *error = nullptr, BymlLimits limits = {});
+};

@@ -1,0 +1,3 @@
+https://github.com/ARM-software/astc-encoder
+tag 5.2.0, commit 2319d9c4d4af53a7fc7c52985e264ce6e8a02a9b
+The library sources from Source/ (astcenc*.cpp, astcenc*.h), unmodified. The command-line tool, tests and other third-party code in that repository are not included.
