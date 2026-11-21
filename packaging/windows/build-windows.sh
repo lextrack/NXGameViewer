@@ -22,13 +22,7 @@ cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build "$build"
 
 if [ "${RUN_TESTS:-1}" = 1 ]; then
-    if ! (cd "$build" && QT_QPA_PLATFORM=offscreen ctest --output-on-failure); then
-        if [ "${ALLOW_TEST_FAILURES:-0}" = 1 ]; then
-            echo "Some tests failed; continuing because ALLOW_TEST_FAILURES=1." >&2
-        else
-            exit 1
-        fi
-    fi
+    (cd "$build" && QT_QPA_PLATFORM=offscreen ctest --output-on-failure)
 fi
 
 bash "$root/packaging/windows/deploy.sh" "$build" "$out/$name"
