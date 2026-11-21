@@ -363,7 +363,7 @@ void MainWindow::exportJson()
 
 void MainWindow::exportImage()
 {
-    const QImage image = m_modelView && m_modelView->isVisible() ? m_modelView->grabFramebuffer() : m_imageView->image();
+    const QImage image = m_modelView && m_modelView->isVisible() ? m_modelView->grabCleanImage() : m_imageView->image();
     const Table *table = currentTable();
     if (image.isNull() || !table)
         return;

@@ -45,13 +45,16 @@ std::optional<PixelFormat> bntxPixelFormat(quint32 format)
     case 0x02: return PixelFormat::R8;
     case 0x07: return PixelFormat::RGB565;
     case 0x09: return PixelFormat::RG8;
+    case 0x0A: return PixelFormat::R16;
     case 0x0B: return PixelFormat::RGBA8;
     case 0x0C: return PixelFormat::BGRA8;
+    case 0x15: return variant == 0x05 ? std::optional(PixelFormat::RGBA16F) : std::nullopt;
     case 0x1A: return PixelFormat::BC1;
     case 0x1B: return PixelFormat::BC2;
     case 0x1C: return PixelFormat::BC3;
     case 0x1D: return variant == 0x02 ? PixelFormat::BC4S : PixelFormat::BC4;
     case 0x1E: return variant == 0x02 ? PixelFormat::BC5S : PixelFormat::BC5;
+    case 0x1F: return variant == 0x05 ? PixelFormat::BC6HS : PixelFormat::BC6H;
     case 0x20: return PixelFormat::BC7;
     default:
         if (type >= 0x2D && type <= 0x3A && (variant == 0x01 || variant == 0x06)) {

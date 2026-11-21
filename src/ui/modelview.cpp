@@ -8,7 +8,9 @@
 #include <QOpenGLBuffer>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLTexture>
+#include <QKeyEvent>
 #include <QPainter>
+#include <QSurfaceFormat>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -42,10 +44,16 @@ uniform float alphaCutoff;
 uniform bool blend;
 uniform vec3 lightDir;
 uniform vec3 baseColor;
+uniform bool unlit;
+uniform vec3 lineColor;
 varying vec3 vNormal;
 varying vec2 vUv;
 void main()
 {
+    if (unlit) {
+        gl_FragColor = vec4(lineColor, 1.0);
+        return;
+    }
     vec4 color = hasTexture ? texture2D(tex, vUv) : vec4(baseColor, 1.0);
     if (color.a < alphaCutoff)
         discard;
@@ -53,6 +61,26 @@ void main()
     gl_FragColor = vec4(color.rgb * light, blend ? color.a : 1.0);
 }
 )";
+
+constexpr int kStride = 8 * sizeof(float);
+
+std::unique_ptr<QOpenGLBuffer> makeBuffer(QOpenGLBuffer::Type type, const void *data, qsizetype bytes)
+{
+    auto buffer = std::make_unique<QOpenGLBuffer>(type);
+    buffer->create();
+    buffer->bind();
+    buffer->allocate(data, int(bytes));
+    return buffer;
+}
+
+std::unique_ptr<QOpenGLBuffer> makeLines(const std::vector<QVector3D> &points)
+{
+    std::vector<float> vertices;
+    vertices.reserve(points.size() * 8);
+    for (const QVector3D &p : points)
+        vertices.insert(vertices.end(), {p.x(), p.y(), p.z(), 0.f, 1.f, 0.f, 0.f, 0.f});
+    return makeBuffer(QOpenGLBuffer::VertexBuffer, vertices.data(), qsizetype(vertices.size() * sizeof(float)));
+}
 
 QOpenGLTexture::WrapMode wrapMode(int mdlWrap)
 {
@@ -82,7 +110,14 @@ bool ModelView::isSupported()
 ModelView::ModelView(QWidget *parent) : QOpenGLWidget(parent), m_failed(!isSupported())
 {
     setMinimumHeight(120);
-    setToolTip(tr("Drag to turn, right-drag to move, wheel to zoom, double-click to reset"));
+    setFocusPolicy(Qt::ClickFocus);
+    setMouseTracking(true);
+    QSurfaceFormat surface = format();
+    surface.setSamples(4);
+    setFormat(surface);
+    setToolTip(tr("Drag to turn, right-drag to move, wheel to zoom, double-click to reset\n"
+                  "F: frame the model · 1, 3, 7: front, side, top view (with Ctrl: the opposite side)\n"
+                  "W: wireframe · B: skeleton · G: ground grid · click an axis of the gizmo to look along it"));
 }
 
 ModelView::~ModelView()
@@ -94,7 +129,7 @@ ModelView::~ModelView()
 
 void ModelView::cleanupGl()
 {
-    if (!m_program && m_draws.empty() && m_textures.empty())
+    if (!m_program && m_draws.empty() && m_textures.empty() && !m_grid && !m_bones)
         return;
     makeCurrent();
     releaseGpu();
@@ -130,6 +165,7 @@ void ModelView::setModel(std::shared_ptr<const Model3D> model, std::vector<std::
         }
     }
     m_center = any ? (lo + hi) / 2 : QVector3D();
+    m_floor = any ? lo.y() : 0.f;
     m_radius = any ? std::max(0.001f, (hi - lo).length() / 2) : 1.f;
     resetView();
 }
@@ -152,8 +188,29 @@ void ModelView::resetView()
 {
     m_yaw = 30.f;
     m_pitch = 15.f;
+    frame();
+}
+
+QImage ModelView::grabCleanImage()
+{
+    m_overlays = false;
+    const QImage image = grabFramebuffer();
+    m_overlays = true;
+    update();
+    return image;
+}
+
+void ModelView::frame()
+{
     m_distance = m_radius * 2.6f;
     m_pan = QVector3D();
+    update();
+}
+
+void ModelView::setViewAngles(float yaw, float pitch)
+{
+    m_yaw = yaw;
+    m_pitch = pitch;
     update();
 }
 
@@ -176,6 +233,9 @@ void ModelView::releaseGpu()
 {
     m_draws.clear();
     m_textures.clear();
+    m_grid.reset();
+    m_bones.reset();
+    m_gridCount = m_boneCount = 0;
 }
 
 void ModelView::upload()
@@ -202,7 +262,8 @@ void ModelView::upload()
         m_textures[i] = std::move(texture);
     }
 
-    for (const ModelPrimitive &prim : m_model->primitives) {
+    for (size_t index = 0; index < m_model->primitives.size(); ++index) {
+        const ModelPrimitive &prim = m_model->primitives[index];
         if (m_model->isAuxiliary(prim) || prim.indices.empty())
             continue;
         const Matrix4 matrix = m_model->meshMatrix(prim.mesh);
@@ -232,14 +293,11 @@ void ModelView::upload()
             }
         }
         DrawCall d;
-        d.vertices = std::make_unique<QOpenGLBuffer>(QOpenGLBuffer::VertexBuffer);
-        d.vertices->create();
-        d.vertices->bind();
-        d.vertices->allocate(interleaved.data(), int(interleaved.size() * sizeof(float)));
-        d.indices = std::make_unique<QOpenGLBuffer>(QOpenGLBuffer::IndexBuffer);
-        d.indices->create();
-        d.indices->bind();
-        d.indices->allocate(prim.indices.data(), int(prim.indices.size() * sizeof(quint32)));
+        d.primitive = index;
+        d.vertices = makeBuffer(QOpenGLBuffer::VertexBuffer, interleaved.data(),
+                                qsizetype(interleaved.size() * sizeof(float)));
+        d.indices = makeBuffer(QOpenGLBuffer::IndexBuffer, prim.indices.data(),
+                               qsizetype(prim.indices.size() * sizeof(quint32)));
         d.indexCount = int(prim.indices.size());
         if (prim.material >= 0 && size_t(prim.material) < m_model->materials.size()) {
             const ModelMaterial &material = m_model->materials[size_t(prim.material)];
@@ -255,12 +313,45 @@ void ModelView::upload()
         m_draws.push_back(std::move(d));
     }
     std::stable_sort(m_draws.begin(), m_draws.end(), [](const DrawCall &a, const DrawCall &b) { return !a.blend && b.blend; });
+
+    const float step = std::pow(10.f, std::floor(std::log10(std::max(m_radius * 0.2f, 1e-4f))));
+    const int half = std::min(50, int(std::ceil(m_radius * 1.5f / step)));
+    const float cx = std::round(m_center.x() / step) * step, cz = std::round(m_center.z() / step) * step;
+    const float extent = float(half) * step;
+    std::vector<QVector3D> grid;
+    for (int i = -half; i <= half; ++i) {
+        const float offset = float(i) * step;
+        grid.insert(grid.end(), {QVector3D(cx + offset, m_floor, cz - extent), QVector3D(cx + offset, m_floor, cz + extent),
+                                 QVector3D(cx - extent, m_floor, cz + offset), QVector3D(cx + extent, m_floor, cz + offset)});
+    }
+    m_grid = makeLines(grid);
+    m_gridCount = int(grid.size());
+
+    const std::vector<ModelNode> &nodes = m_model->nodes;
+    std::vector<bool> inSkeleton(nodes.size(), false);
+    for (const ModelMesh &mesh : m_model->meshes)
+        for (int n : mesh.joints)
+            for (; n >= 0 && size_t(n) < nodes.size() && !inSkeleton[size_t(n)]; n = nodes[size_t(n)].parent)
+                inSkeleton[size_t(n)] = true;
+    std::vector<QVector3D> bones;
+    for (size_t n = 0; n < nodes.size(); ++n) {
+        const int parent = nodes[n].parent;
+        if (!inSkeleton[n] || parent < 0 || size_t(parent) >= nodes.size() || !inSkeleton[size_t(parent)])
+            continue;
+        const Matrix4 a = m_model->worldMatrix(parent), b = m_model->worldMatrix(int(n));
+        bones.insert(bones.end(), {QVector3D(a[12], a[13], a[14]), QVector3D(b[12], b[13], b[14])});
+    }
+    if (!bones.empty()) {
+        m_bones = makeLines(bones);
+        m_boneCount = int(bones.size());
+    }
 }
 
 void ModelView::paintGL()
 {
     const QColor background(48, 52, 58);
     glClearColor(background.redF(), background.greenF(), background.blueF(), 1.f);
+    glDepthMask(GL_TRUE);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (!m_failed && m_program) {
         if (m_dirty)
@@ -281,9 +372,36 @@ void ModelView::paintGL()
         m_program->setUniformValue("lightDir", (view.inverted().mapVector(QVector3D(0.3f, 0.5f, 0.8f))).normalized());
         m_program->setUniformValue("baseColor", QVector3D(0.78f, 0.74f, 0.68f));
         m_program->setUniformValue("tex", 0);
+        m_program->setUniformValue("unlit", false);
         const int position = m_program->attributeLocation("position");
         const int normal = m_program->attributeLocation("normal");
         const int uv = m_program->attributeLocation("uv");
+        m_program->enableAttributeArray(position);
+        m_program->enableAttributeArray(normal);
+        m_program->enableAttributeArray(uv);
+        const auto bindVertices = [&](QOpenGLBuffer &buffer) {
+            buffer.bind();
+            m_program->setAttributeBuffer(position, GL_FLOAT, 0, 3, kStride);
+            m_program->setAttributeBuffer(normal, GL_FLOAT, 3 * sizeof(float), 3, kStride);
+            m_program->setAttributeBuffer(uv, GL_FLOAT, 6 * sizeof(float), 2, kStride);
+        };
+        const auto drawLines = [&](QOpenGLBuffer *buffer, int count, const QVector3D &color) {
+            if (!buffer || count == 0)
+                return;
+            bindVertices(*buffer);
+            m_program->setUniformValue("unlit", true);
+            m_program->setUniformValue("lineColor", color);
+            glDrawArrays(GL_LINES, 0, count);
+            m_program->setUniformValue("unlit", false);
+        };
+
+        if (m_overlays && m_showGrid)
+            drawLines(m_grid.get(), m_gridCount, QVector3D(0.36f, 0.39f, 0.43f));
+        const bool wireframe = m_overlays && m_wireframe;
+        if (wireframe) {
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(1.f, 1.f);
+        }
         for (const DrawCall &d : m_draws) {
             if (d.blend) {
                 glEnable(GL_BLEND);
@@ -297,14 +415,8 @@ void ModelView::paintGL()
                 glEnable(GL_CULL_FACE);
             else
                 glDisable(GL_CULL_FACE);
-            d.vertices->bind();
+            bindVertices(*d.vertices);
             d.indices->bind();
-            m_program->enableAttributeArray(position);
-            m_program->enableAttributeArray(normal);
-            m_program->enableAttributeArray(uv);
-            m_program->setAttributeBuffer(position, GL_FLOAT, 0, 3, 8 * sizeof(float));
-            m_program->setAttributeBuffer(normal, GL_FLOAT, 3 * sizeof(float), 3, 8 * sizeof(float));
-            m_program->setAttributeBuffer(uv, GL_FLOAT, 6 * sizeof(float), 2, 8 * sizeof(float));
             const bool textured = d.texture >= 0;
             m_program->setUniformValue("hasTexture", textured);
             m_program->setUniformValue("alphaCutoff", d.alphaCutoff);
@@ -315,6 +427,35 @@ void ModelView::paintGL()
             if (textured)
                 m_textures[size_t(d.texture)]->release(0);
         }
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+        if (wireframe) {
+            glDisable(GL_POLYGON_OFFSET_FILL);
+            glDepthMask(GL_FALSE);
+            m_program->setUniformValue("unlit", true);
+            m_program->setUniformValue("lineColor", QVector3D(0.72f, 0.78f, 0.86f));
+            for (DrawCall &d : m_draws) {
+                if (!d.edges) {
+                    const std::vector<quint32> &indices = m_model->primitives[d.primitive].indices;
+                    std::vector<quint32> edges;
+                    edges.reserve(indices.size() * 2);
+                    for (size_t i = 0; i + 2 < indices.size(); i += 3)
+                        edges.insert(edges.end(), {indices[i], indices[i + 1], indices[i + 1], indices[i + 2],
+                                                   indices[i + 2], indices[i]});
+                    d.edges = makeBuffer(QOpenGLBuffer::IndexBuffer, edges.data(),
+                                         qsizetype(edges.size() * sizeof(quint32)));
+                    d.edgeCount = int(edges.size());
+                }
+                bindVertices(*d.vertices);
+                d.edges->bind();
+                glDrawElements(GL_LINES, d.edgeCount, GL_UNSIGNED_INT, nullptr);
+            }
+            m_program->setUniformValue("unlit", false);
+        }
+        if (m_overlays && m_showSkeleton && m_boneCount > 0) {
+            glDisable(GL_DEPTH_TEST);
+            drawLines(m_bones.get(), m_boneCount, QVector3D(1.f, 0.78f, 0.25f));
+        }
         m_program->disableAttributeArray(position);
         m_program->disableAttributeArray(normal);
         m_program->disableAttributeArray(uv);
@@ -324,16 +465,140 @@ void ModelView::paintGL()
         glDisable(GL_CULL_FACE);
         glDisable(GL_DEPTH_TEST);
     }
+    if (!m_overlays)
+        return;
+    QPainter painter(this);
+    if (!m_failed && m_program && m_model)
+        drawAxes(painter);
     if (!m_message.isEmpty()) {
-        QPainter painter(this);
         painter.setPen(QColor(200, 200, 200));
         painter.drawText(rect(), Qt::AlignCenter, m_message);
+    }
+}
+
+std::vector<ModelView::GizmoHandle> ModelView::gizmoHandles() const
+{
+    QMatrix4x4 rotation;
+    rotation.rotate(m_pitch, 1, 0, 0);
+    rotation.rotate(-m_yaw, 0, 1, 0);
+    const QColor colors[3] = {QColor(255, 54, 83), QColor(138, 219, 0), QColor(44, 143, 255)};
+    const QString names[3] = {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")};
+    const float views[6][2] = {{90.f, 0.f}, {-90.f, 0.f}, {0.f, 89.f}, {0.f, -89.f}, {0.f, 0.f}, {180.f, 0.f}};
+    const QPointF center = gizmoCenter();
+    std::vector<GizmoHandle> handles;
+    for (int id = 0; id < 6; ++id) {
+        QVector3D axis;
+        axis[id / 2] = id % 2 == 0 ? 1.f : -1.f;
+        const QVector3D d = rotation.mapVector(axis);
+        GizmoHandle h;
+        h.id = id;
+        h.positive = id % 2 == 0;
+        h.center = center + QPointF(d.x(), -d.y()) * kGizmoLength;
+        h.depth = d.z();
+        h.color = colors[id / 2];
+        h.label = h.positive ? names[id / 2] : QStringLiteral("-") + names[id / 2];
+        h.yaw = views[id][0];
+        h.pitch = views[id][1];
+        handles.push_back(h);
+    }
+    std::sort(handles.begin(), handles.end(), [](const GizmoHandle &x, const GizmoHandle &y) { return x.depth < y.depth; });
+    return handles;
+}
+
+QPointF ModelView::gizmoCenter() const
+{
+    const qreal margin = kGizmoLength + kGizmoDot + 10;
+    return QPointF(width() - margin, margin);
+}
+
+int ModelView::gizmoHandleAt(const QPointF &point) const
+{
+    const std::vector<GizmoHandle> handles = gizmoHandles();
+    for (auto it = handles.rbegin(); it != handles.rend(); ++it) {
+        const qreal radius = it->positive ? kGizmoDot : kGizmoDot - 1.5;
+        if (QLineF(point, it->center).length() <= radius + 2)
+            return it->id;
+    }
+    return -1;
+}
+
+bool ModelView::overGizmo(const QPointF &point) const
+{
+    return QLineF(point, gizmoCenter()).length() <= kGizmoLength + kGizmoDot + 4;
+}
+
+void ModelView::drawAxes(QPainter &painter) const
+{
+    const QPointF center = gizmoCenter();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::TextAntialiasing);
+    if (m_hoverGizmo) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(255, 255, 255, 30));
+        painter.drawEllipse(center, kGizmoLength + kGizmoDot + 4, kGizmoLength + kGizmoDot + 4);
+    }
+    QFont font = painter.font();
+    font.setBold(true);
+    font.setPixelSize(11);
+    painter.setFont(font);
+    const QColor background(48, 52, 58);
+    const std::vector<GizmoHandle> handles = gizmoHandles();
+    const auto shade = [&](const GizmoHandle &h) {
+        if (h.id == m_hoverHandle)
+            return h.color.lighter(125);
+        const float k = 0.55f + 0.45f * (0.5f + 0.5f * h.depth);
+        return QColor::fromRgbF(float(h.color.redF()) * k + float(background.redF()) * (1 - k),
+                                float(h.color.greenF()) * k + float(background.greenF()) * (1 - k),
+                                float(h.color.blueF()) * k + float(background.blueF()) * (1 - k));
+    };
+    for (const GizmoHandle &h : handles) {
+        if (!h.positive)
+            continue;
+        painter.setPen(QPen(shade(h), 2.4, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(center, h.center);
+    }
+    for (const GizmoHandle &h : handles) {
+        const bool hovered = h.id == m_hoverHandle;
+        const QColor color = shade(h);
+        if (h.positive) {
+            painter.setPen(hovered ? QPen(Qt::white, 1.5) : Qt::NoPen);
+            painter.setBrush(color);
+            painter.drawEllipse(h.center, kGizmoDot, kGizmoDot);
+            painter.setPen(QColor(16, 18, 22));
+            painter.drawText(QRectF(h.center - QPointF(kGizmoDot, kGizmoDot), QSizeF(2 * kGizmoDot, 2 * kGizmoDot)),
+                             Qt::AlignCenter, h.label);
+        } else {
+            const qreal radius = kGizmoDot - 1.5;
+            QColor fill = color;
+            fill.setAlpha(hovered ? 255 : 70);
+            painter.setPen(QPen(color, 1.6));
+            painter.setBrush(fill);
+            painter.drawEllipse(h.center, radius, radius);
+            if (hovered) {
+                painter.setPen(QColor(16, 18, 22));
+                painter.drawText(QRectF(h.center - QPointF(kGizmoDot, kGizmoDot), QSizeF(2 * kGizmoDot, 2 * kGizmoDot)),
+                                 Qt::AlignCenter, h.label);
+            }
+        }
     }
 }
 
 void ModelView::mousePressEvent(QMouseEvent *event)
 {
     m_lastMouse = event->position().toPoint();
+    m_pressMouse = m_lastMouse;
+    m_pressHandle = event->button() == Qt::LeftButton ? gizmoHandleAt(event->position()) : -1;
+}
+
+void ModelView::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (m_pressHandle >= 0 && (event->position().toPoint() - m_pressMouse).manhattanLength() < 4
+        && gizmoHandleAt(event->position()) == m_pressHandle) {
+        for (const GizmoHandle &h : gizmoHandles())
+            if (h.id == m_pressHandle)
+                setViewAngles(h.yaw, h.pitch);
+    }
+    m_pressHandle = -1;
 }
 
 void ModelView::mouseMoveEvent(QMouseEvent *event)
@@ -350,14 +615,72 @@ void ModelView::mouseMoveEvent(QMouseEvent *event)
         const float scale = m_distance / float(std::max(1, height())) * 0.7f;
         m_pan += rotation.mapVector(QVector3D(-float(delta.x()) * scale, float(delta.y()) * scale, 0));
     } else {
-        return;
+        const bool over = overGizmo(event->position());
+        const int handle = over ? gizmoHandleAt(event->position()) : -1;
+        if (over == m_hoverGizmo && handle == m_hoverHandle)
+            return;
+        m_hoverGizmo = over;
+        m_hoverHandle = handle;
+        setCursor(handle >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
     }
     update();
 }
 
-void ModelView::mouseDoubleClickEvent(QMouseEvent *)
+void ModelView::leaveEvent(QEvent *event)
 {
-    resetView();
+    QOpenGLWidget::leaveEvent(event);
+    if (!m_hoverGizmo && m_hoverHandle < 0)
+        return;
+    m_hoverGizmo = false;
+    m_hoverHandle = -1;
+    unsetCursor();
+    update();
+}
+
+void ModelView::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (gizmoHandleAt(event->position()) < 0)
+        resetView();
+}
+
+void ModelView::keyPressEvent(QKeyEvent *event)
+{
+    const Qt::KeyboardModifiers modifiers = event->modifiers() & ~Qt::KeypadModifier;
+    const bool opposite = modifiers == Qt::ControlModifier;
+    const bool plain = modifiers == Qt::NoModifier;
+    switch (event->key()) {
+    case Qt::Key_1:
+        if (!plain && !opposite)
+            break;
+        setViewAngles(opposite ? 180.f : 0.f, 0.f);
+        return;
+    case Qt::Key_3:
+        if (!plain && !opposite)
+            break;
+        setViewAngles(opposite ? -90.f : 90.f, 0.f);
+        return;
+    case Qt::Key_7:
+        if (!plain && !opposite)
+            break;
+        setViewAngles(0.f, opposite ? -89.f : 89.f);
+        return;
+    case Qt::Key_F:
+        if (!plain)
+            break;
+        frame();
+        return;
+    case Qt::Key_W:
+    case Qt::Key_B:
+    case Qt::Key_G:
+        if (!plain)
+            break;
+        (event->key() == Qt::Key_W ? m_wireframe : event->key() == Qt::Key_B ? m_showSkeleton : m_showGrid) ^= true;
+        update();
+        return;
+    default:
+        break;
+    }
+    QOpenGLWidget::keyPressEvent(event);
 }
 
 void ModelView::wheelEvent(QWheelEvent *event)

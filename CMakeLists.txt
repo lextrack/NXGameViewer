@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(NXGameViewer VERSION 0.2 LANGUAGES C CXX)
+project(NXGameViewer VERSION 0.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,8 +9,6 @@ find_package(Qt6 REQUIRED COMPONENTS Gui Widgets OpenGL OpenGLWidgets Multimedia
 if(UNIX AND NOT APPLE)
     find_package(Qt6 COMPONENTS DBus)
 endif()
-# opus (BSD licence, decodes .nxopus sounds) and zstd: CMake packages first (vcpkg, Visual Studio),
-# then pkg-config (Linux, MSYS2).
 add_library(nxgv_opus INTERFACE)
 add_library(nxgv_zstd INTERFACE)
 find_package(Opus CONFIG QUIET)
@@ -39,8 +37,6 @@ add_library(nxgv_warnings INTERFACE)
 target_compile_options(nxgv_warnings INTERFACE
     $<IF:$<CXX_COMPILER_ID:MSVC>,/W3,-Wall -Wextra -Wshadow -Wno-missing-field-initializers>)
 
-# File formats: no GUI code, so they can be tested on their own.
-# Add new readers here (and register them in src/formats/core/registry.cpp).
 add_library(formats STATIC
     src/formats/core/audio.cpp
     src/formats/core/batchexport.cpp  src/formats/core/batchexport.h
@@ -135,6 +131,7 @@ add_library(formats STATIC
     src/formats/switchfs/switchgame.cpp  src/formats/switchfs/switchgame.h
 )
 add_library(bc7enc STATIC third_party/bc7enc/bc7enc.c)
+add_library(bcdec STATIC third_party/bcdec/bcdec.c)
 find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 file(GLOB ASTCENC_SOURCES CONFIGURE_DEPENDS third_party/astcenc/astcenc_*.cpp)
@@ -147,9 +144,12 @@ target_link_libraries(astcenc PUBLIC Threads::Threads)
 target_include_directories(bc7enc SYSTEM PUBLIC third_party/bc7enc)
 set_target_properties(bc7enc PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(bc7enc PRIVATE $<IF:$<C_COMPILER_ID:MSVC>,/O2,-O2>)
+target_include_directories(bcdec SYSTEM PUBLIC third_party/bcdec)
+set_target_properties(bcdec PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_options(bcdec PRIVATE $<IF:$<C_COMPILER_ID:MSVC>,/O2,-O2>)
 
 target_include_directories(formats PUBLIC src src/formats)
-target_link_libraries(formats PUBLIC Qt6::Core PRIVATE nxgv_opus nxgv_zstd bc7enc astcenc ZLIB::ZLIB OpenSSL::Crypto nxgv_warnings)
+target_link_libraries(formats PUBLIC Qt6::Core PRIVATE nxgv_opus nxgv_zstd bc7enc bcdec astcenc ZLIB::ZLIB OpenSSL::Crypto nxgv_warnings)
 
 add_library(mediaformats STATIC
     src/formats/media/mediaformats.cpp     src/formats/media/mediaformats.h
@@ -160,7 +160,6 @@ add_library(mediaformats STATIC
 )
 target_link_libraries(mediaformats PUBLIC formats Qt6::Gui Qt6::Multimedia PRIVATE nxgv_warnings)
 
-# The window, as a library so the tests can use it too
 add_library(viewerui STATIC
     src/ui/mainwindow.cpp src/ui/mainwindow.h
     src/ui/mainwindow_browser.cpp src/ui/mainwindow_columns.cpp src/ui/mainwindow_export.cpp src/ui/mainwindow_keys.cpp
@@ -187,14 +186,12 @@ if(TARGET Qt6::DBus)
     target_compile_definitions(viewerui PRIVATE HAVE_QT_DBUS)
 endif()
 
-# The desktop app
 qt_add_executable(NXGameViewer src/main.cpp)
 target_link_libraries(NXGameViewer PRIVATE viewerui nxgv_warnings)
 set_target_properties(NXGameViewer PROPERTIES WIN32_EXECUTABLE TRUE)
 include(GNUInstallDirs)
 install(TARGETS NXGameViewer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# Tests
 enable_testing()
 foreach(test test_tblfile test_formats test_falcomjson test_records test_textures test_falcomscript test_text
              test_models test_audio test_batch test_archives test_texturewrite test_modlayout test_archivewrite test_bntx test_mips test_astc test_bfres test_gamedata test_sound test_unity test_cri test_rpf6 test_rage test_switch)
@@ -202,7 +199,7 @@ foreach(test test_tblfile test_formats test_falcomjson test_records test_texture
     target_link_libraries(${test} PRIVATE formats Qt6::Test nxgv_warnings)
     add_test(NAME ${test} COMMAND ${test})
 endforeach()
-target_link_libraries(test_audio PRIVATE nxgv_opus)  # encodes its own test sound
+target_link_libraries(test_audio PRIVATE nxgv_opus)
 target_link_libraries(test_cri PRIVATE nxgv_opus)
 target_link_libraries(test_sound PRIVATE nxgv_opus)
 target_link_libraries(test_rpf6 PRIVATE ZLIB::ZLIB)
@@ -220,7 +217,6 @@ set_tests_properties(test_media PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscree
 qt_add_executable(test_mainwindow tests/test_mainwindow.cpp tests/sample_tbl.h tests/sample_mdl.h)
 target_link_libraries(test_mainwindow PRIVATE viewerui Qt6::Test ZLIB::ZLIB nxgv_zstd nxgv_warnings)
 add_test(NAME test_mainwindow COMMAND test_mainwindow)
-# Run the window test without showing a window on screen
 set_tests_properties(test_mainwindow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0")
 
 option(NXGV_FUZZ "Build the libFuzzer targets (needs clang)" OFF)

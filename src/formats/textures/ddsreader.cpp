@@ -46,6 +46,10 @@ std::optional<PixelFormat> fromDxgi(quint32 dxgi)
     case 81: return PixelFormat::BC4S;
     case 83: return PixelFormat::BC5;
     case 84: return PixelFormat::BC5S;
+    case 10: return PixelFormat::RGBA16F;
+    case 56: return PixelFormat::R16;
+    case 95: return PixelFormat::BC6H;
+    case 96: return PixelFormat::BC6HS;
     case 98: case 99: return PixelFormat::BC7;
     default: return std::nullopt;
     }

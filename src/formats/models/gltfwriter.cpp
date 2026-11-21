@@ -179,6 +179,7 @@ QByteArray writeGlb(const Model3D &model, const std::vector<std::shared_ptr<cons
 {
     BinaryBuilder b;
     QJsonArray nodes, meshes, materials, gltfTextures, images, samplers, skins, sceneNodes;
+    std::map<QByteArray, int> skinCache;
 
     std::vector<QJsonArray> children(model.nodes.size());
     for (size_t i = 0; i < model.nodes.size(); ++i) {
@@ -348,10 +349,12 @@ QByteArray writeGlb(const Model3D &model, const std::vector<std::shared_ptr<cons
                 attributes["JOINTS_0"] = b.addAccessor(joints, 4, kUnsignedShort, "VEC4");
                 attributes["WEIGHTS_0"] = b.addAccessor(weights, 4, kFloat, "VEC4");
             }
-            QJsonObject primitive{{"attributes", attributes},
-                                  {"indices", b.addAccessor(prim.indices, 1, kUnsignedInt, "SCALAR", false,
-                                                            kElementArrayBuffer)},
-                                  {"mode", 4}};
+            const bool shortIndices = *std::max_element(prim.indices.begin(), prim.indices.end()) < 0xFFFF;
+            const int indices = shortIndices
+                                  ? b.addAccessor(std::vector<quint16>(prim.indices.begin(), prim.indices.end()), 1,
+                                                  kUnsignedShort, "SCALAR", false, kElementArrayBuffer)
+                                  : b.addAccessor(prim.indices, 1, kUnsignedInt, "SCALAR", false, kElementArrayBuffer);
+            QJsonObject primitive{{"attributes", attributes}, {"indices", indices}, {"mode", 4}};
             if (prim.material >= 0)
                 primitive["material"] = prim.material;
             primitives.append(primitive);
@@ -372,10 +375,16 @@ QByteArray writeGlb(const Model3D &model, const std::vector<std::shared_ptr<cons
                 inverseBind.insert(inverseBind.end(), ibm.begin(), ibm.end());
                 joints.append(joint);
             }
-            skins.append(QJsonObject{{"name", mesh.name},
-                                     {"joints", joints},
-                                     {"inverseBindMatrices", b.addAccessor(inverseBind, 16, kFloat, "MAT4", false, 0)}});
-            node["skin"] = int(skins.size() - 1);
+            QByteArray key(reinterpret_cast<const char *>(skinJoints.data()), qsizetype(skinJoints.size() * sizeof(int)));
+            key.append(reinterpret_cast<const char *>(inverseBind.data()), qsizetype(inverseBind.size() * sizeof(float)));
+            auto skin = skinCache.find(key);
+            if (skin == skinCache.end()) {
+                skins.append(QJsonObject{{"name", mesh.name},
+                                         {"joints", joints},
+                                         {"inverseBindMatrices", b.addAccessor(inverseBind, 16, kFloat, "MAT4", false, 0)}});
+                skin = skinCache.emplace(key, int(skins.size() - 1)).first;
+            }
+            node["skin"] = skin->second;
             sceneNodes.append(nodeIndex);
         } else if (model.staticMeshesUseNodeTransform && mesh.node >= 0) {
             children[size_t(mesh.node)].append(nodeIndex);
@@ -397,17 +406,52 @@ QByteArray writeGlb(const Model3D &model, const std::vector<std::shared_ptr<cons
         allAnimations.push_back(&animation);
     for (const ModelAnimation &animation : animations)
         allAnimations.push_back(&animation);
+    std::map<QByteArray, int> timeCache;
+    auto timeAccessor = [&](const std::vector<float> &times) {
+        const QByteArray key(reinterpret_cast<const char *>(times.data()), qsizetype(times.size() * sizeof(float)));
+        auto it = timeCache.find(key);
+        if (it == timeCache.end())
+            it = timeCache.emplace(key, b.addAccessor(times, 1, kFloat, "SCALAR", false, 0, true)).first;
+        return it->second;
+    };
+    auto componentsOf = [](const AnimationChannel &c) { return c.path == AnimationPath::Rotation ? size_t(4) : size_t(3); };
+    auto constant = [&](const AnimationChannel &c) {
+        const size_t components = componentsOf(c);
+        for (size_t i = components; i < c.values.size(); ++i)
+            if (std::abs(c.values[i] - c.values[i % components]) > 1e-6f)
+                return false;
+        return true;
+    };
     for (const ModelAnimation *each : allAnimations) {
         const ModelAnimation &animation = *each;
         QJsonArray animationSamplers, channels;
+        std::map<std::pair<int, int>, const AnimationChannel *> chosen;
+        std::vector<std::pair<int, int>> order;
         for (const AnimationChannel &channel : animation.channels) {
-            const size_t components = channel.path == AnimationPath::Rotation ? 4 : 3;
             if (channel.node < 0 || size_t(channel.node) >= model.nodes.size() || channel.times.empty()
-                || channel.values.size() != channel.times.size() * components)
+                || channel.values.size() != channel.times.size() * componentsOf(channel))
                 continue;
-            const int input = b.addAccessor(channel.times, 1, kFloat, "SCALAR", false, 0, true);
-            const int output = b.addAccessor(channel.values, int(components), kFloat, components == 4 ? "VEC4" : "VEC3",
-                                             false, 0);
+            const std::pair<int, int> target{channel.node, int(channel.path)};
+            const auto [it, added] = chosen.emplace(target, &channel);
+            if (added)
+                order.push_back(target);
+            else if (constant(*it->second) && !constant(channel))
+                it->second = &channel;
+        }
+        for (const auto &target : order) {
+            const AnimationChannel &channel = *chosen[target];
+            const size_t components = componentsOf(channel);
+            int input, output;
+            if (channel.times.size() > 2 && constant(channel)) {
+                input = timeAccessor({channel.times.front(), channel.times.back()});
+                std::vector<float> values(channel.values.begin(), channel.values.begin() + qsizetype(components));
+                values.insert(values.end(), channel.values.begin(), channel.values.begin() + qsizetype(components));
+                output = b.addAccessor(values, int(components), kFloat, components == 4 ? "VEC4" : "VEC3", false, 0);
+            } else {
+                input = timeAccessor(channel.times);
+                output = b.addAccessor(channel.values, int(components), kFloat, components == 4 ? "VEC4" : "VEC3",
+                                       false, 0);
+            }
             animationSamplers.append(QJsonObject{{"input", input}, {"output", output}, {"interpolation", "LINEAR"}});
             const char *path = channel.path == AnimationPath::Rotation ? "rotation"
                              : channel.path == AnimationPath::Scale    ? "scale"

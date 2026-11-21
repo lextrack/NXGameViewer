@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QSet>
 
+#include <algorithm>
 #include <map>
 
 namespace {
@@ -125,6 +126,10 @@ std::vector<AnimationFile> inspectAnimationFile(const QString &path, const Model
             const int matched = countMatches(bones, nodes);
             if (!fits(matched, bones.size()) || (bones.size() >= 2 && matched < 2))
                 continue;
+            const qsizetype skeletonMatched = countMatches(clip.bones, nodes);
+            const qsizetype missing = clip.bones.size() - skeletonMatched;
+            if ((missing > 1 && missing * 5 > clip.bones.size()) || skeletonMatched < std::min(qsizetype(10), nodes.size() / 2))
+                continue;
             AnimationFile file;
             file.path = path;
             file.name = QStringLiteral("%1 — %2").arg(clip.name, stem);
@@ -158,6 +163,12 @@ std::vector<AnimationFile> findAnimationFiles(const QString &modelPath, const Mo
             if (!candidates.contains(name))
                 candidates << name;
     }
+    const QString modelName = info.baseName();
+    const auto relevance = [&modelName](const QString &name) {
+        return name.startsWith(modelName, Qt::CaseInsensitive) ? 0 : name.contains(modelName, Qt::CaseInsensitive) ? 1 : 2;
+    };
+    std::stable_sort(candidates.begin(), candidates.end(),
+                     [&](const QString &a, const QString &b) { return relevance(a) < relevance(b); });
     std::vector<AnimationFile> found;
     int inspected = 0;
     for (const QString &name : candidates) {
@@ -173,7 +184,6 @@ std::vector<AnimationFile> findAnimationFiles(const QString &modelPath, const Mo
         for (AnimationFile &a : inspectAnimationFile(dir.filePath(name), model))
             found.push_back(std::move(a));
     }
-    const QString modelName = info.baseName();
     auto closeness = [&modelName](const AnimationFile &a) {
         const QString other = QFileInfo(a.path).baseName();
         qsizetype n = 0;

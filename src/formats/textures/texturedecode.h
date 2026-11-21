@@ -17,6 +17,8 @@ enum class PixelFormat {
     RGBA4,
     RGB5A1,
     RGB10A2,
+    R16,
+    RGBA16F,
     BC1,      // 4×4 blocks of 8 bytes (DXT1)
     BC2,      // 16 bytes (DXT3)
     BC3,      // 16 bytes (DXT5)
@@ -24,6 +26,8 @@ enum class PixelFormat {
     BC4S,
     BC5,      // 16 bytes, two channels (usually normal maps), shown as red/green
     BC5S,
+    BC6H,
+    BC6HS,
     BC7,      // 16 bytes
     ASTC_4x4,
     ASTC_5x4,

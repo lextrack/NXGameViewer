@@ -34,10 +34,6 @@ written to separate folders.
 | Falcom games | TBL, binary JSON, scripts |
 | Other | Fonts (TTF, OTF, BFTTF, BFOTF), JSON, text, and a hex view for anything else |
 
-Some formats belong to specific engines and games (Falcom's Trails games, Red Dead
-Redemption's RAGE engine, Unity and CRI middleware). See
-[Red Dead Redemption animations](Documents/Red-Dead-Redemption-Animations.md) for an example.
-
 ## Download
 
 Ready-made builds are on the [Releases](https://github.com/lextrack/NXGameViewer/releases) page:

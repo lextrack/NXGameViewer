@@ -3,6 +3,9 @@
 #include "core/bytes.h"
 #include "textures/astc.h"
 
+#include <bcdec.h>
+
+#include <QFloat16>
 #include <QtEndian>
 
 #include <algorithm>
@@ -22,6 +25,16 @@ quint8 expand(quint32 value, int bits)
 void setPixel(uchar *out, int width, int x, int y, Rgba c)
 {
     std::memcpy(out + (qsizetype(y) * width + x) * 4, c.data(), 4);
+}
+
+quint8 unitToByte(float v)
+{
+    return quint8(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
+}
+
+float halfAt(const uchar *p)
+{
+    return float(qFromLittleEndian<qfloat16>(p));
 }
 
 Rgba from565(quint16 v)
@@ -277,6 +290,12 @@ Rgba decodeUncompressed(PixelFormat format, const uchar *p)
         const quint32 v = le32(p);
         return {quint8((v >> 2) & 255), quint8((v >> 12) & 255), quint8((v >> 22) & 255), expand(v >> 30, 2)};
     }
+    case PixelFormat::R16: {
+        const quint8 v = quint8((le16(p) * 255u + 32767u) / 65535u);
+        return {v, v, v, 255};
+    }
+    case PixelFormat::RGBA16F:
+        return {unitToByte(halfAt(p)), unitToByte(halfAt(p + 2)), unitToByte(halfAt(p + 4)), unitToByte(halfAt(p + 6))};
     default: return {};
     }
 }
@@ -312,6 +331,14 @@ void decodeBlock(PixelFormat format, const uchar *block, Rgba out[16])
         for (int i = 0; i < 16; ++i)
             out[i] = {a[i], b[i], 0, 255};
         break;
+    case PixelFormat::BC6H:
+    case PixelFormat::BC6HS: {
+        float rgb[48];
+        bcdec_bc6h_float(block, rgb, 12, format == PixelFormat::BC6HS);
+        for (int i = 0; i < 16; ++i)
+            out[i] = {unitToByte(rgb[i * 3]), unitToByte(rgb[i * 3 + 1]), unitToByte(rgb[i * 3 + 2]), 255};
+        break;
+    }
     case PixelFormat::BC7:
         decodeBc7Block(block, out);
         break;
@@ -341,6 +368,8 @@ QString pixelFormatName(PixelFormat format)
     case PixelFormat::RGBA4: return QStringLiteral("RGBA4");
     case PixelFormat::RGB5A1: return QStringLiteral("RGB5A1");
     case PixelFormat::RGB10A2: return QStringLiteral("RGB10A2");
+    case PixelFormat::R16: return QStringLiteral("R16");
+    case PixelFormat::RGBA16F: return QStringLiteral("RGBA16 float");
     case PixelFormat::BC1: return QStringLiteral("BC1 (DXT1)");
     case PixelFormat::BC2: return QStringLiteral("BC2 (DXT3)");
     case PixelFormat::BC3: return QStringLiteral("BC3 (DXT5)");
@@ -348,6 +377,8 @@ QString pixelFormatName(PixelFormat format)
     case PixelFormat::BC4S: return QStringLiteral("BC4 signed");
     case PixelFormat::BC5: return QStringLiteral("BC5");
     case PixelFormat::BC5S: return QStringLiteral("BC5 signed");
+    case PixelFormat::BC6H: return QStringLiteral("BC6H");
+    case PixelFormat::BC6HS: return QStringLiteral("BC6H signed");
     case PixelFormat::BC7: return QStringLiteral("BC7");
     case PixelFormat::ASTC_4x4:
     case PixelFormat::ASTC_4x4_SRGB:
@@ -436,6 +467,7 @@ int bytesPerElement(PixelFormat format)
 {
     switch (format) {
     case PixelFormat::R8: return 1;
+    case PixelFormat::R16:
     case PixelFormat::RG8:
     case PixelFormat::RGB565:
     case PixelFormat::RGBA4:
@@ -447,7 +479,10 @@ int bytesPerElement(PixelFormat format)
     case PixelFormat::BC3:
     case PixelFormat::BC5:
     case PixelFormat::BC5S:
+    case PixelFormat::BC6H:
+    case PixelFormat::BC6HS:
     case PixelFormat::BC7: return 16;
+    case PixelFormat::RGBA16F: return 8;
     default: return isAstc(format) ? 16 : 4;
     }
 }

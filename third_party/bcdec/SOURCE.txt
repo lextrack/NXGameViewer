@@ -1,0 +1,1 @@
+From https://github.com/iOrange/bcdec at commit 80859ed3b7afb1c527a2a99d70c61457bea72d0c (v0.985), bcdec.h unmodified. bcdec.c only compiles the implementation.

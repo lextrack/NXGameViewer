@@ -11,6 +11,7 @@ GPL projects. These projects are used or credited:
 | [FFmpeg](https://ffmpeg.org/), through Qt Multimedia's plugin | LGPL-2.1+ (loaded at run time by Qt) | decoding common sound formats (MP3, Ogg, FLAC, M4A, …) |
 | [libopus](https://opus-codec.org/) | BSD-3-Clause | decoding `.nxopus` sounds |
 | [bc7enc](https://github.com/richgel999/bc7enc) by Richard Geldreich, Jr. (bundled in `third_party/bc7enc`, unmodified) | MIT (dual-licensed with public domain; used under MIT, notice in `third_party/bc7enc/LICENSE`) | compressing changed texture blocks to BC7, BC1, BC3, BC4 and BC5 when replacing a texture |
+| [bcdec](https://github.com/iOrange/bcdec) by Sergii Kudlai (bundled in `third_party/bcdec`, unmodified) | MIT (dual-licensed with the Unlicense; used under MIT, notice in `third_party/bcdec/LICENSE`) | decoding BC6H (HDR) textures |
 | [astc-encoder](https://github.com/ARM-software/astc-encoder) by Arm Limited, version 5.2.0 (library sources bundled in `third_party/astcenc`, unmodified) | Apache-2.0 (licence text in `third_party/astcenc/LICENSE.txt`; the project has no NOTICE file) | decoding ASTC textures, and compressing changed ASTC blocks when replacing a texture |
 | [zstd](https://github.com/facebook/zstd) (libzstd) | BSD-3-Clause (dual-licensed with GPL-2.0; used under BSD) | opening zstd-compressed files (`.zs`), compressing rebuilt mod files again, and reading compressed Switch games (NSZ/XCZ) |
 | [zlib](https://zlib.net/) | zlib licence | reading zlib and raw-deflate entries in RPF6 archives |
